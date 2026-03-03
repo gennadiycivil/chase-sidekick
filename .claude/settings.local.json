@@ -69,7 +69,8 @@
       "Bash(do echo \"=== $epic ===\")",
       "Skill(kudos)",
       "Skill(kudos:*)",
-      "Bash(git rebase --continue)"
+      "Bash(git rebase --continue)",
+      "WebFetch(domain:dropbox.atlassian.net)"
     ],
     "additionalDirectories": [
       "/tmp"

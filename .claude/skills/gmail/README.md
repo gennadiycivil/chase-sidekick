@@ -4,90 +4,72 @@ Search and manage Gmail messages using the command line.
 
 ## Setup
 
-### Quick Setup (Recommended)
+Gmail, Google Calendar, and Google Sheets all share the same OAuth2 credentials. You only need to do this once — the same `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, and `GOOGLE_REFRESH_TOKEN` in your `.env` file work for all three services.
 
-Use the provided helper script to set up Gmail, Google Calendar, and Google Sheets with one OAuth token:
+### Step 1: Create a Google Cloud Project
+
+1. Go to [Google Cloud Console](https://console.cloud.google.com/)
+2. Click the project dropdown at the top and click **New Project**
+3. Give it a name (e.g., "Sidekick") and click **Create**
+4. Make sure the new project is selected in the dropdown
+
+### Step 2: Enable the APIs
+
+1. Go to **APIs & Services > Library** in the left sidebar
+2. Search for and enable each of these:
+   - **Gmail API**
+   - **Google Calendar API**
+   - **Google Sheets API**
+   - **Google Drive API**
+
+### Step 3: Create OAuth2 Credentials
+
+1. Go to **APIs & Services > Credentials**
+2. Click **+ Create Credentials > OAuth client ID**
+3. If prompted to configure a consent screen first:
+   - Choose **External** (or **Internal** if you're on Google Workspace)
+   - Fill in the required fields (app name, your email)
+   - Add your email as a test user
+   - Save and continue through the screens
+4. Back in Credentials, click **+ Create Credentials > OAuth client ID**
+5. Application type: **Desktop app**
+6. Give it a name and click **Create**
+7. Copy the **Client ID** and **Client Secret** shown in the dialog
+
+### Step 4: Generate a Refresh Token
+
+Run the included helper script:
 
 ```bash
 python3 tools/get_google_refresh_token.py
 ```
 
-This interactive script will guide you through the entire setup process and generate the credentials you need.
+The script will:
+1. Ask you to paste your Client ID and Client Secret
+2. Open your browser to authorize the app with your Google account
+3. After you authorize, you'll be redirected to a `localhost` URL that won't load — this is expected
+4. Copy the **entire URL** from your browser's address bar and paste it back into the script
+5. The script outputs your refresh token
 
-### Manual Setup (Alternative)
+**Tip:** If you've previously authorized this app and don't get a refresh token, go to https://myaccount.google.com/permissions, remove the app, and run the script again.
 
-#### 1. Create OAuth2 Credentials
+### Step 5: Configure .env
 
-1. Go to [Google Cloud Console](https://console.cloud.google.com/)
-2. Create a new project (or select existing)
-3. Enable Gmail API:
-   - Go to "APIs & Services" > "Library"
-   - Search for "Gmail API"
-   - Click "Enable"
-4. Create OAuth2 credentials:
-   - Go to "APIs & Services" > "Credentials"
-   - Click "Create Credentials" > "OAuth client ID"
-   - Application type: "Desktop app"
-   - Name it (e.g., "My Sidekick App")
-   - Download the credentials JSON
-
-#### 2. Get Refresh Token
-
-You need to obtain a refresh token. Use this Python script:
-
-```python
-from urllib.parse import urlencode
-import webbrowser
-
-client_id = "YOUR_CLIENT_ID"
-redirect_uri = "http://localhost"
-scope = "https://www.googleapis.com/auth/gmail.modify"
-
-auth_url = "https://accounts.google.com/o/oauth2/v2/auth?" + urlencode({
-    "client_id": client_id,
-    "redirect_uri": redirect_uri,
-    "response_type": "code",
-    "scope": scope,
-    "access_type": "offline",
-    "prompt": "consent"
-})
-
-print("Visit this URL:")
-print(auth_url)
-webbrowser.open(auth_url)
-
-# After authorizing, copy the 'code' from the redirect URL
-code = input("Enter the authorization code: ")
-
-# Exchange code for tokens
-import urllib.request
-import json
-
-token_url = "https://oauth2.googleapis.com/token"
-data = urlencode({
-    "client_id": client_id,
-    "client_secret": "YOUR_CLIENT_SECRET",
-    "code": code,
-    "redirect_uri": redirect_uri,
-    "grant_type": "authorization_code"
-}).encode()
-
-req = urllib.request.Request(token_url, data=data)
-with urllib.request.urlopen(req) as response:
-    tokens = json.loads(response.read().decode())
-    print("\nRefresh token:")
-    print(tokens["refresh_token"])
-```
-
-### 3. Configure .env
-
-Add to your `.env` file:
+Add (or update) these three lines in your `.env` file:
 
 ```bash
-GMAIL_CLIENT_ID=your_client_id_here
-GMAIL_CLIENT_SECRET=your_client_secret_here
-GMAIL_REFRESH_TOKEN=your_refresh_token_here
+GOOGLE_CLIENT_ID=your_client_id_here
+GOOGLE_CLIENT_SECRET=your_client_secret_here
+GOOGLE_REFRESH_TOKEN=your_refresh_token_here
 ```
+
+### Step 6: Verify
+
+```bash
+python -m sidekick.clients.gmail search "is:unread"
+```
+
+If you see your unread messages, you're all set.
 
 ## Commands
 

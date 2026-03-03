@@ -4,90 +4,17 @@ Manage Google Calendar events from the command line.
 
 ## Setup
 
-### Quick Setup (Recommended)
+Google Calendar shares OAuth2 credentials with Gmail and Google Sheets. If you've already set up Gmail, you're done — the same `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, and `GOOGLE_REFRESH_TOKEN` in your `.env` file work for all three services.
 
-Use the provided helper script to set up Gmail, Google Calendar, and Google Sheets with one OAuth token:
+If you haven't set up Google credentials yet, see the [Gmail README](../gmail/README.md#setup) for step-by-step instructions. The setup covers all Google services at once.
 
-```bash
-python3 tools/get_google_refresh_token.py
-```
-
-This interactive script will guide you through the entire setup process and generate the credentials you need.
-
-### Manual Setup (Alternative)
-
-#### 1. Create OAuth2 Credentials
-
-1. Go to [Google Cloud Console](https://console.cloud.google.com/)
-2. Create a new project (or use existing)
-3. Enable Google Calendar API:
-   - Go to "APIs & Services" > "Library"
-   - Search for "Google Calendar API"
-   - Click "Enable"
-4. Create OAuth2 credentials:
-   - Go to "APIs & Services" > "Credentials"
-   - Click "Create Credentials" > "OAuth client ID"
-   - Application type: "Desktop app"
-   - Name it (e.g., "My Sidekick App")
-   - Download the credentials JSON
-
-#### 2. Get Refresh Token
-
-Use this Python script to obtain a refresh token:
-
-```python
-from urllib.parse import urlencode
-import webbrowser
-
-client_id = "YOUR_CLIENT_ID"
-redirect_uri = "http://localhost"
-scope = "https://www.googleapis.com/auth/calendar"
-
-auth_url = "https://accounts.google.com/o/oauth2/v2/auth?" + urlencode({
-    "client_id": client_id,
-    "redirect_uri": redirect_uri,
-    "response_type": "code",
-    "scope": scope,
-    "access_type": "offline",
-    "prompt": "consent"
-})
-
-print("Visit this URL:")
-print(auth_url)
-webbrowser.open(auth_url)
-
-# After authorizing, copy the 'code' from the redirect URL
-code = input("Enter the authorization code: ")
-
-# Exchange code for tokens
-import urllib.request
-import json
-
-token_url = "https://oauth2.googleapis.com/token"
-data = urlencode({
-    "client_id": client_id,
-    "client_secret": "YOUR_CLIENT_SECRET",
-    "code": code,
-    "redirect_uri": redirect_uri,
-    "grant_type": "authorization_code"
-}).encode()
-
-req = urllib.request.Request(token_url, data=data)
-with urllib.request.urlopen(req) as response:
-    tokens = json.loads(response.read().decode())
-    print("\nRefresh token:")
-    print(tokens["refresh_token"])
-```
-
-### 3. Configure .env
-
-Add to your `.env` file:
+### Verify
 
 ```bash
-GOOGLE_CALENDAR_CLIENT_ID=your_client_id_here
-GOOGLE_CALENDAR_CLIENT_SECRET=your_client_secret_here
-GOOGLE_CALENDAR_REFRESH_TOKEN=your_refresh_token_here
+python -m sidekick.clients.gcalendar list
 ```
+
+If you see your upcoming events, you're all set.
 
 ## Commands
 
