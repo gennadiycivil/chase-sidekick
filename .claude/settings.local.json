@@ -1,6 +1,7 @@
 {
   "permissions": {
     "allow": [
+      "Bash(*)",
       "Bash(pip3 search:*)",
       "Bash(tree:*)",
       "Bash(python3:*)",
@@ -11,6 +12,7 @@
       "Bash(head:*)",
       "Bash(osascript:*)",
       "Bash(python -m py_compile:*)",
+      "WebFetch(*)",
       "WebFetch(domain:www.dropbox.com)",
       "Bash(python:*)",
       "Bash(ls:*)",
@@ -71,7 +73,11 @@
       "Skill(kudos:*)",
       "Bash(git rebase --continue)",
       "WebFetch(domain:dropbox.atlassian.net)",
-      "Bash(git merge slack-client)"
+      "Bash(git merge slack-client)",
+      "Skill(slack)",
+      "Skill(slack:*)",
+      "WebFetch(domain:docs.zoom.us)",
+      "WebFetch(domain:os.dropbox.com)"
     ],
     "additionalDirectories": [
       "/tmp"
