@@ -304,6 +304,39 @@ def get_google_config() -> dict:
     }
 
 
+def get_zoom_config() -> dict:
+    """Get Zoom configuration from .env file or environment variables.
+
+    For Server-to-Server OAuth apps (account-level).
+
+    Returns:
+        dict with keys: account_id, client_id, client_secret, user_email
+
+    Raises:
+        ValueError: If required environment variables are missing
+    """
+    env_file_vars = _load_env_file()
+
+    account_id = _get_env("ZOOM_ACCOUNT_ID", env_file_vars)
+    client_id = _get_env("ZOOM_CLIENT_ID", env_file_vars)
+    client_secret = _get_env("ZOOM_CLIENT_SECRET", env_file_vars)
+    user_email = _get_env("ZOOM_USER_EMAIL", env_file_vars)
+
+    if not all([account_id, client_id, client_secret]):
+        raise ValueError(
+            "Missing required Zoom configuration. "
+            "Set ZOOM_ACCOUNT_ID, ZOOM_CLIENT_ID, and ZOOM_CLIENT_SECRET "
+            "in .env file or environment variables."
+        )
+
+    return {
+        "account_id": account_id,
+        "client_id": client_id,
+        "client_secret": client_secret,
+        "user_email": user_email
+    }
+
+
 def get_slack_config() -> dict:
     """Get Slack configuration from .env file or environment variables.
 
