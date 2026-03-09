@@ -204,6 +204,22 @@ class ZoomClient:
 
         return all_meetings
 
+    def get_meeting_summary(self, meeting_uuid: str) -> Optional[dict]:
+        """Get AI Companion meeting summary.
+
+        Args:
+            meeting_uuid: Meeting UUID (from past_meeting instances)
+
+        Returns:
+            Dict with summary_overview, summary_details, next_steps, etc.
+            None if no summary available.
+        """
+        safe_id = urllib.parse.quote(urllib.parse.quote(str(meeting_uuid), safe=""), safe="")
+        try:
+            return self._request("GET", f"/meetings/{safe_id}/meeting_summary")
+        except ValueError:
+            return None
+
     def get_meeting_recordings(self, meeting_id: str) -> dict:
         """Get recordings for a specific meeting.
 
@@ -770,6 +786,89 @@ def main():
                     if len(lines) > 20:
                         print(f"  ... ({len(lines) - 20} more lines)")
                     print()
+
+        elif command == "summary":
+            if len(sys.argv) < 3:
+                print("Error: Missing meeting ID", file=sys.stderr)
+                sys.exit(1)
+            meeting_id = sys.argv[2]
+
+            # Get the most recent instance UUID
+            instances = client.get_past_meeting_instances(meeting_id)
+            if not instances:
+                print(f"No past instances for meeting {meeting_id}", file=sys.stderr)
+                sys.exit(1)
+
+            uuid = instances[-1]["uuid"]
+            result = client.get_meeting_summary(uuid)
+            if result:
+                print(f"Meeting: {result.get('meeting_topic', '')}")
+                print(f"Date: {result.get('meeting_start_time', '')[:16].replace('T', ' ')}")
+                print(f"\nOverview:\n{result.get('summary_overview', 'N/A')}")
+                details = result.get("summary_details", [])
+                if details:
+                    print(f"\nTopics ({len(details)}):")
+                    for d in details:
+                        print(f"  - {d.get('label', '')}")
+                steps = result.get("next_steps", [])
+                if steps:
+                    print(f"\nNext Steps:")
+                    for s in steps:
+                        print(f"  - {s}")
+            else:
+                print(f"No summary found for meeting {meeting_id}", file=sys.stderr)
+                sys.exit(1)
+
+        elif command == "summaries":
+            person = None
+            date_text = "last week"
+            args = sys.argv[2:]
+            i = 0
+            date_parts = []
+            while i < len(args):
+                if args[i] == "--person" and i + 1 < len(args):
+                    person = args[i + 1]
+                    i += 2
+                else:
+                    date_parts.append(args[i])
+                    i += 1
+            if date_parts:
+                date_text = " ".join(date_parts)
+
+            from_date, to_date = _parse_date_range(date_text)
+            print(f"Fetching AI Companion summaries: {from_date} to {to_date}")
+            if person:
+                print(f"Filtering by: {person}")
+            print()
+
+            meetings = client.find_meetings_from_calendar(from_date, to_date, person)
+            found = 0
+            for m in meetings:
+                mid = m["meeting_id"]
+                instances = client.get_past_meeting_instances(mid)
+                for inst in instances:
+                    inst_date = inst.get("start_time", "")[:10]
+                    if from_date <= inst_date <= to_date:
+                        result = client.get_meeting_summary(inst["uuid"])
+                        if result:
+                            found += 1
+                            overview = result.get("summary_overview", "")
+                            details = result.get("summary_details", [])
+                            topic_labels = [d.get("label", "") for d in details]
+                            steps = result.get("next_steps", [])
+                            print(f"--- {m['topic']} [{inst.get('start_time', '')[:16].replace('T', ' ')}] ---")
+                            print(f"Overview: {overview[:200]}...")
+                            if topic_labels:
+                                print(f"Topics: {', '.join(topic_labels)}")
+                            if steps:
+                                print(f"Next steps: {len(steps)}")
+                            print()
+                        break  # Only latest matching instance per meeting
+
+            if not found:
+                print("No summaries found.")
+            else:
+                print(f"Found {found} meeting summaries.")
 
         else:
             print(f"Unknown command: {command}", file=sys.stderr)
