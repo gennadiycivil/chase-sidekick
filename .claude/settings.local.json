@@ -77,7 +77,9 @@
       "Skill(slack)",
       "Skill(slack:*)",
       "WebFetch(domain:docs.zoom.us)",
-      "WebFetch(domain:os.dropbox.com)"
+      "WebFetch(domain:os.dropbox.com)",
+      "Skill(gsheets)",
+      "Skill(gsheets:*)"
     ],
     "additionalDirectories": [
       "/tmp"

@@ -291,9 +291,11 @@ class GSheetsClient:
         Returns:
             2D list of cell values
         """
+        import urllib.parse
+        encoded_range = urllib.parse.quote(range_name, safe='!:')
         result = self._request(
             "GET",
-            f"/spreadsheets/{spreadsheet_id}/values/{range_name}"
+            f"/spreadsheets/{spreadsheet_id}/values/{encoded_range}"
         )
         return result.get("values", [])
 
@@ -413,9 +415,11 @@ class GSheetsClient:
         request_body = {
             "values": values
         }
+        import urllib.parse
+        encoded_range = urllib.parse.quote(range_name, safe='!:')
         return self._request(
             "PUT",
-            f"/spreadsheets/{spreadsheet_id}/values/{range_name}",
+            f"/spreadsheets/{spreadsheet_id}/values/{encoded_range}",
             params={"valueInputOption": "RAW"},
             json_data=request_body
         )
