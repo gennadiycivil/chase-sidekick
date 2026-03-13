@@ -1,7 +1,10 @@
 {
   "permissions": {
     "allow": [
-      "Bash(OMNIFOCUS_DEFAULT_PROJECT= python3:*)"
+      "Bash(OMNIFOCUS_DEFAULT_PROJECT= python3:*)",
+      "Edit",
+      "Write",
+      "Read"
     ]
   }
 }
