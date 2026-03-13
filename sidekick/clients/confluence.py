@@ -876,6 +876,28 @@ class ConfluenceClient:
 
         return self._request("POST", endpoint, json_data=json_data)
 
+    def add_comment(self, page_id: str, body: str) -> dict:
+        """Add a footer comment to a Confluence page using v2 API.
+
+        Args:
+            page_id: Page ID to comment on
+            body: Comment body (HTML in storage format)
+
+        Returns:
+            Created comment dict
+        """
+        endpoint = f"/wiki/api/v2/footer-comments"
+        json_data = {
+            "pageId": page_id,
+            "body": {
+                "storage": {
+                    "value": body,
+                    "representation": "storage"
+                }
+            }
+        }
+        return self._request("POST", endpoint, json_data=json_data)
+
     def update_page(
         self,
         page_id: str,
@@ -1257,6 +1279,7 @@ def main():
         read-page <page-id>
         create-page <space> <title> <content-file> [--parent PAGE-ID]
         update-page <page-id> <content-file> [--title TITLE]
+        add-comment <page-id> <body>
         add-topic-to-oneonone <person-name> <topic> [--section SECTION]
         create-oneonone <name> <email> <parent-id> [--paper-url URL] [--template URL]
         set-page-restrictions <page-id> [--read EMAIL1,EMAIL2] [--update EMAIL1,EMAIL2]
@@ -1276,6 +1299,7 @@ def main():
         print("  read-page <page-id>")
         print("  create-page <space> <title> <content-file> [--parent PAGE-ID]")
         print("  update-page <page-id> <content-file> [--title TITLE]")
+        print("  add-comment <page-id> <body>")
         print("  add-topic-to-oneonone <person-name> <topic> [--section SECTION]")
         print("  create-oneonone <name> <email> <parent-id> [--paper-url URL] [--template URL]")
         print("  set-page-restrictions <page-id> [--read EMAIL1,EMAIL2] [--update EMAIL1,EMAIL2]")
@@ -1440,6 +1464,24 @@ def main():
             print(f"Updated page: {page_id}: {title} [{space_key}] (v{version})")
             if url:
                 print(f"  URL: {url}")
+
+        elif command == "add-comment":
+            if len(sys.argv) < 4:
+                print("Usage: add-comment <page-id> <body>", file=sys.stderr)
+                sys.exit(1)
+
+            page_id = sys.argv[2]
+            body = sys.argv[3]
+
+            # Convert markdown-style bold to HTML
+            import re
+            body = re.sub(r'\*\*(.+?)\*\*', r'<strong>\1</strong>', body)
+            # Convert newlines to <br/>
+            body = body.replace('\n', '<br/>')
+
+            comment = client.add_comment(page_id, body)
+            comment_id = comment.get("id", "?")
+            print(f"Comment added (id: {comment_id}) to page {page_id}")
 
         elif command == "add-topic-to-oneonone":
             if len(sys.argv) < 4:
