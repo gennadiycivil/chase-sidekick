@@ -16,19 +16,72 @@ class DropboxClient:
     - Regular file content operations (get/write)
     - Paper doc content operations (get/create/update)
     - Share link resolution
+    - OAuth2 refresh token flow (auto-refreshes expired access tokens)
     - No external dependencies (Python stdlib only)
     """
 
-    def __init__(self, access_token: str, timeout: int = 30):
-        """Initialize Dropbox client with OAuth access token.
+    def __init__(self, access_token: str = None, app_key: str = None,
+                 app_secret: str = None, refresh_token: str = None,
+                 timeout: int = 30):
+        """Initialize Dropbox client.
+
+        Two modes:
+        1. Refresh token (recommended): provide app_key, app_secret, refresh_token
+        2. Static access token (legacy): provide access_token only
 
         Args:
-            access_token: Dropbox OAuth 2.0 access token
+            access_token: Dropbox OAuth 2.0 access token (optional if using refresh token)
+            app_key: Dropbox app key (for refresh token flow)
+            app_secret: Dropbox app secret (for refresh token flow)
+            refresh_token: Dropbox OAuth2 refresh token (long-lived)
             timeout: Request timeout in seconds (default: 30)
         """
         self.access_token = access_token
+        self.app_key = app_key
+        self.app_secret = app_secret
+        self.refresh_token = refresh_token
         self.timeout = timeout
         self.api_call_count = 0
+
+        # If we have refresh token credentials but no access token, get one now
+        if self.refresh_token and self.app_key and self.app_secret and not self.access_token:
+            self._refresh_access_token()
+
+    def _refresh_access_token(self):
+        """Use refresh token to obtain a new short-lived access token.
+
+        Raises:
+            ValueError: If refresh token is invalid or revoked
+            ConnectionError: If network error occurs
+        """
+        url = "https://api.dropboxapi.com/oauth2/token"
+        data = urllib.parse.urlencode({
+            "grant_type": "refresh_token",
+            "refresh_token": self.refresh_token,
+            "client_id": self.app_key,
+            "client_secret": self.app_secret,
+        }).encode('utf-8')
+
+        req = urllib.request.Request(url, data=data, method='POST')
+        req.add_header("Content-Type", "application/x-www-form-urlencoded")
+
+        try:
+            with urllib.request.urlopen(req, timeout=self.timeout) as response:
+                result = json.loads(response.read().decode('utf-8'))
+                self.access_token = result["access_token"]
+        except urllib.error.HTTPError as e:
+            error_body = e.read().decode('utf-8') if e.fp else ''
+            raise ValueError(
+                f"Failed to refresh Dropbox access token ({e.code}): {error_body}. "
+                f"Your refresh token may be invalid or revoked. "
+                f"Run: python3 tools/get_dropbox_refresh_token.py to get a new one."
+            )
+        except urllib.error.URLError as e:
+            raise ConnectionError(f"Network error refreshing Dropbox token: {e.reason}")
+
+    def _can_refresh(self) -> bool:
+        """Check if we have credentials to refresh the access token."""
+        return bool(self.refresh_token and self.app_key and self.app_secret)
 
     def _get_auth_headers(self) -> dict:
         """Get authorization headers for API requests.
@@ -41,10 +94,12 @@ class DropboxClient:
             "Content-Type": "application/json"
         }
 
-    def _request_api(self, endpoint: str, data: dict = None, content: bytes = None) -> dict:
+    def _request_api(self, endpoint: str, data: dict = None, content: bytes = None,
+                     _retried: bool = False) -> dict:
         """Make API request to api.dropboxapi.com.
 
         Used for metadata operations, sharing, and Paper export/import.
+        Automatically retries once on 401 if refresh token is available.
 
         Args:
             endpoint: API endpoint (e.g., "/2/files/get_metadata")
@@ -93,6 +148,10 @@ class DropboxClient:
             error_body = e.read().decode('utf-8') if e.fp else ''
 
             if e.code == 401:
+                # Auto-refresh and retry once
+                if not _retried and self._can_refresh():
+                    self._refresh_access_token()
+                    return self._request_api(endpoint, data, content, _retried=True)
                 raise ValueError(
                     f"Dropbox authentication failed (401 Unauthorized). "
                     f"Check your access token. Get a new token at: "
@@ -133,10 +192,12 @@ class DropboxClient:
         except urllib.error.URLError as e:
             raise ConnectionError(f"Network error connecting to Dropbox: {e.reason}")
 
-    def _request_content(self, endpoint: str, api_arg: dict, upload_content: bytes = None) -> tuple:
+    def _request_content(self, endpoint: str, api_arg: dict, upload_content: bytes = None,
+                         _retried: bool = False) -> tuple:
         """Make content request to content.dropboxapi.com.
 
         Used for file download and upload operations.
+        Automatically retries once on 401 if refresh token is available.
 
         Args:
             endpoint: API endpoint (e.g., "/2/files/download")
@@ -182,6 +243,10 @@ class DropboxClient:
             error_body = e.read().decode('utf-8') if e.fp else ''
 
             if e.code == 401:
+                # Auto-refresh and retry once
+                if not _retried and self._can_refresh():
+                    self._refresh_access_token()
+                    return self._request_content(endpoint, api_arg, upload_content, _retried=True)
                 raise ValueError(
                     f"Dropbox authentication failed (401 Unauthorized). "
                     f"Check your access token."
@@ -262,6 +327,66 @@ class DropboxClient:
         data = {"url": share_link}
         return self._request_api("/2/sharing/get_shared_link_metadata", data)
 
+    def _request_export(self, path: str, export_format: str = None, _retried: bool = False) -> bytes:
+        """Export a Paper doc via content API.
+
+        Automatically retries once on 401 if refresh token is available.
+
+        Args:
+            path: Dropbox path to Paper doc
+            export_format: Export format ('markdown' or 'html')
+
+        Returns:
+            bytes with exported content
+        """
+        api_arg = {"path": path}
+        if export_format:
+            api_arg["export_format"] = export_format
+
+        url = "https://content.dropboxapi.com/2/files/export"
+        headers = {
+            "Authorization": f"Bearer {self.access_token}",
+            "Dropbox-API-Arg": json.dumps(api_arg)
+        }
+
+        req = urllib.request.Request(url, headers=headers, method='POST')
+
+        try:
+            self.api_call_count += 1
+            with urllib.request.urlopen(req, timeout=self.timeout) as response:
+                return response.read()
+        except urllib.error.HTTPError as e:
+            error_body = e.read().decode('utf-8') if e.fp else ''
+            if e.code == 401:
+                if not _retried and self._can_refresh():
+                    self._refresh_access_token()
+                    return self._request_export(path, export_format, _retried=True)
+                raise ValueError(
+                    f"Dropbox authentication failed (401 Unauthorized). "
+                    f"Check your access token."
+                )
+            elif e.code == 404:
+                raise ValueError(
+                    f"File export failed (404). This may indicate:\n"
+                    f"1. The file is not exportable (check metadata)\n"
+                    f"2. Missing app permissions for Paper/cloud doc export\n"
+                    f"3. Invalid path: {path}\n"
+                    f"Error: {error_body}"
+                )
+            elif e.code == 409:
+                try:
+                    error_data = json.loads(error_body) if error_body else {}
+                    error_summary = error_data.get('error_summary', 'Conflict')
+                    raise ValueError(f"Dropbox API conflict (409): {error_summary}")
+                except json.JSONDecodeError:
+                    raise ValueError(f"Dropbox API conflict (409): {error_body}")
+            elif 400 <= e.code < 500:
+                raise ValueError(f"Dropbox API error ({e.code}): {error_body}")
+            else:
+                raise RuntimeError(f"Dropbox server error ({e.code}): {error_body}")
+        except urllib.error.URLError as e:
+            raise ConnectionError(f"Network error connecting to Dropbox: {e.reason}")
+
     def get_file_contents(self, path: str, export_format: str = None) -> bytes:
         """Get file content by Dropbox path.
 
@@ -281,51 +406,7 @@ class DropboxClient:
         metadata = self.get_metadata(path)
 
         if self._is_paper_file(metadata):
-            # Use /files/export endpoint for Paper docs (uses content API)
-            api_arg = {
-                "path": path
-            }
-
-            # Add export_format if specified
-            if export_format:
-                api_arg["export_format"] = export_format
-
-            url = "https://content.dropboxapi.com/2/files/export"
-            headers = {
-                "Authorization": f"Bearer {self.access_token}",
-                "Dropbox-API-Arg": json.dumps(api_arg)
-            }
-
-            req = urllib.request.Request(url, headers=headers, method='POST')
-
-            try:
-                self.api_call_count += 1
-                with urllib.request.urlopen(req, timeout=self.timeout) as response:
-                    content = response.read()
-                    return content
-            except urllib.error.HTTPError as e:
-                error_body = e.read().decode('utf-8') if e.fp else ''
-                if e.code == 404:
-                    raise ValueError(
-                        f"File export failed (404). This may indicate:\n"
-                        f"1. The file is not exportable (check metadata)\n"
-                        f"2. Missing app permissions for Paper/cloud doc export\n"
-                        f"3. Invalid path: {path}\n"
-                        f"Error: {error_body}"
-                    )
-                elif e.code == 409:
-                    try:
-                        error_data = json.loads(error_body) if error_body else {}
-                        error_summary = error_data.get('error_summary', 'Conflict')
-                        raise ValueError(f"Dropbox API conflict (409): {error_summary}")
-                    except json.JSONDecodeError:
-                        raise ValueError(f"Dropbox API conflict (409): {error_body}")
-                elif 400 <= e.code < 500:
-                    raise ValueError(f"Dropbox API error ({e.code}): {error_body}")
-                else:
-                    raise RuntimeError(f"Dropbox server error ({e.code}): {error_body}")
-            except urllib.error.URLError as e:
-                raise ConnectionError(f"Network error connecting to Dropbox: {e.reason}")
+            return self._request_export(path, export_format)
         else:
             # Use regular download for non-Paper files
             api_arg = {"path": path}
@@ -508,52 +589,7 @@ class DropboxClient:
             "doc_update_policy": "overwrite"
         }
 
-        url = "https://api.dropboxapi.com/2/files/paper/update"
-        headers = {
-            "Authorization": f"Bearer {self.access_token}",
-            "Dropbox-API-Arg": json.dumps(api_arg),
-            "Content-Type": "application/octet-stream"
-        }
-
-        req = urllib.request.Request(url, data=content_bytes, headers=headers, method='POST')
-
-        try:
-            with urllib.request.urlopen(req, timeout=self.timeout) as response:
-                self.api_call_count += 1
-                response_body = response.read().decode('utf-8')
-
-                # Parse response as JSON
-                if response_body:
-                    return json.loads(response_body)
-                return {}
-
-        except urllib.error.HTTPError as e:
-            error_body = e.read().decode('utf-8') if e.fp else ''
-
-            if e.code == 401:
-                raise ValueError(
-                    f"Dropbox authentication failed (401 Unauthorized). "
-                    f"Check your access token."
-                )
-            elif e.code == 409:
-                try:
-                    error_data = json.loads(error_body) if error_body else {}
-                    error_summary = error_data.get('error_summary', 'Conflict')
-                    raise ValueError(f"Dropbox API conflict (409): {error_summary}")
-                except json.JSONDecodeError:
-                    raise ValueError(f"Dropbox API conflict (409): {error_body}")
-            elif 400 <= e.code < 500:
-                try:
-                    error_data = json.loads(error_body) if error_body else {}
-                    error_summary = error_data.get('error_summary', error_body)
-                    raise ValueError(f"Dropbox API error ({e.code}): {error_summary}")
-                except json.JSONDecodeError:
-                    raise ValueError(f"Dropbox API error ({e.code}): {error_body}")
-            else:
-                raise RuntimeError(f"Dropbox server error ({e.code}): {error_body}")
-
-        except urllib.error.URLError as e:
-            raise ConnectionError(f"Network error connecting to Dropbox: {e.reason}")
+        return self._request_api("/2/files/paper/update", data=api_arg, content=content_bytes)
 
 
 def _format_metadata(metadata: dict) -> str:
@@ -641,7 +677,12 @@ def main():
     try:
         from sidekick.config import get_dropbox_config
         config = get_dropbox_config()
-        client = DropboxClient(config["access_token"])
+        client = DropboxClient(
+            access_token=config.get("access_token"),
+            app_key=config.get("app_key"),
+            app_secret=config.get("app_secret"),
+            refresh_token=config.get("refresh_token"),
+        )
     except Exception as e:
         print(f"Error: {e}", file=sys.stderr)
         sys.exit(1)

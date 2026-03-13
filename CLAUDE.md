@@ -153,4 +153,33 @@ Rules for clients
 - Don't ALSO create an agent automatically
 
 ### Providing local context
-The `CLAUDE.local.md` contains context on 1:1 docs, meeting docs, teams, people, and projects. 
+The `CLAUDE.local.md` contains context on 1:1 docs, meeting docs, teams, people, and projects.
+
+### Session Logging (REQUIRED)
+
+Every conversation MUST be logged to `memory/sessions/`. This is non-optional.
+
+**At the start of every conversation:**
+1. Create a session directory: `memory/sessions/YYYY-MM-DD-topic/`
+2. Use today's date and a short descriptive topic slug
+
+**Before the conversation ends (or when asked to save):**
+1. Write `notes.md` with: session date, what happened, key decisions, links referenced
+2. Save any generated artifacts to `artifacts/` subfolder
+3. Add the session to the Sessions list in `memory/MEMORY.md`
+
+**Session notes format:**
+```markdown
+# YYYY-MM-DD — Topic
+
+**Session ID:** (from JSONL filename if known)
+
+## What Happened
+- Bullet points of what was done
+
+## Key References
+- Links to Slack threads, Confluence pages, spreadsheets, etc.
+
+## Decisions
+- Any decisions or preferences established
+```

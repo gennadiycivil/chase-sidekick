@@ -250,25 +250,44 @@ def get_user_config() -> dict:
 def get_dropbox_config() -> dict:
     """Get Dropbox configuration from .env file or environment variables.
 
+    Supports two modes:
+    1. Refresh token (recommended): DROPBOX_APP_KEY, DROPBOX_APP_SECRET, DROPBOX_REFRESH_TOKEN
+       - Tokens are auto-refreshed, no manual renewal needed
+    2. Access token (legacy): DROPBOX_ACCESS_TOKEN
+       - Short-lived (~4 hours), requires manual renewal
+
     Returns:
-        dict with key: access_token
+        dict with keys: app_key, app_secret, refresh_token (and optionally access_token)
 
     Raises:
         ValueError: If required environment variables are missing
     """
     env_file_vars = _load_env_file()
 
+    app_key = _get_env("DROPBOX_APP_KEY", env_file_vars)
+    app_secret = _get_env("DROPBOX_APP_SECRET", env_file_vars)
+    refresh_token = _get_env("DROPBOX_REFRESH_TOKEN", env_file_vars)
     access_token = _get_env("DROPBOX_ACCESS_TOKEN", env_file_vars)
 
-    if not access_token:
-        raise ValueError(
-            "Missing required Dropbox configuration. "
-            "Set DROPBOX_ACCESS_TOKEN in .env file or environment variables. "
-            "Get token at: https://www.dropbox.com/developers/apps "
-            "(create app → generate access token)"
-        )
+    # Prefer refresh token flow
+    if app_key and app_secret and refresh_token:
+        return {
+            "app_key": app_key,
+            "app_secret": app_secret,
+            "refresh_token": refresh_token,
+            "access_token": access_token,  # optional cached token
+        }
 
-    return {"access_token": access_token}
+    # Fallback to static access token
+    if access_token:
+        return {"access_token": access_token}
+
+    raise ValueError(
+        "Missing required Dropbox configuration. "
+        "Set DROPBOX_APP_KEY, DROPBOX_APP_SECRET, and DROPBOX_REFRESH_TOKEN "
+        "in .env file (recommended), or set DROPBOX_ACCESS_TOKEN for legacy mode. "
+        "Run: python3 tools/get_dropbox_refresh_token.py to get a refresh token."
+    )
 
 
 def get_google_config() -> dict:
