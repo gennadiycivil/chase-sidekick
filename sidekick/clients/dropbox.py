@@ -295,6 +295,91 @@ class DropboxClient:
         # Paper docs have export_info field
         return 'export_info' in metadata or metadata.get('.tag') == 'paper'
 
+    def search(self, query: str, path: str = "", max_results: int = 20,
+               file_extensions: list = None, file_categories: list = None) -> list:
+        """Search for files and folders by name or content.
+
+        Uses Dropbox /2/files/search_v2 endpoint.
+
+        Args:
+            query: Search query string
+            path: Scope search to this folder path (empty string = all files)
+            max_results: Maximum results to return (max 1000)
+            file_extensions: Filter by extensions (e.g., ["paper", "pdf", "docx"])
+            file_categories: Filter by category (e.g., ["paper", "document", "spreadsheet", "image", "folder"])
+
+        Returns:
+            List of dicts with keys: name, path, id, type, modified
+        """
+        data = {
+            "query": query,
+            "options": {
+                "max_results": max_results,
+                "path": path,
+            }
+        }
+        if file_extensions:
+            data["options"]["file_extensions"] = file_extensions
+        if file_categories:
+            data["options"]["file_categories"] = [
+                {".tag": cat} for cat in file_categories
+            ]
+
+        result = self._request_api("/2/files/search_v2", data)
+        matches = result.get("matches", [])
+
+        files = []
+        for match in matches:
+            metadata = match.get("metadata", {}).get("metadata", {})
+            files.append({
+                "name": metadata.get("name", ""),
+                "path": metadata.get("path_display", ""),
+                "id": metadata.get("id", ""),
+                "type": "paper" if self._is_paper_file(metadata) else metadata.get(".tag", "unknown"),
+                "modified": metadata.get("server_modified", metadata.get("client_modified", "")),
+            })
+
+        return files
+
+    def list_folder(self, path: str = "", recursive: bool = False,
+                    limit: int = 100) -> list:
+        """List contents of a folder.
+
+        Args:
+            path: Folder path (empty string = root)
+            recursive: Include subfolders recursively
+            limit: Max entries per request (max 2000)
+
+        Returns:
+            List of dicts with keys: name, path, id, type, modified
+        """
+        data = {
+            "path": path,
+            "recursive": recursive,
+            "limit": limit,
+        }
+
+        result = self._request_api("/2/files/list_folder", data)
+        entries = result.get("entries", [])
+
+        # Handle pagination
+        while result.get("has_more"):
+            cursor = result["cursor"]
+            result = self._request_api("/2/files/list_folder/continue", {"cursor": cursor})
+            entries.extend(result.get("entries", []))
+
+        files = []
+        for entry in entries:
+            files.append({
+                "name": entry.get("name", ""),
+                "path": entry.get("path_display", ""),
+                "id": entry.get("id", ""),
+                "type": "paper" if self._is_paper_file(entry) else entry.get(".tag", "unknown"),
+                "modified": entry.get("server_modified", entry.get("client_modified", "")),
+            })
+
+        return files
+
     def get_metadata(self, path: str) -> dict:
         """Get file or folder metadata.
 
@@ -662,6 +747,8 @@ def main():
         print("Usage: python -m sidekick.clients.dropbox <command> [args...]", file=sys.stderr)
         print("", file=sys.stderr)
         print("Commands:", file=sys.stderr)
+        print("  search <query> [--path <path>] [--ext paper,pdf] [--cat paper,document]", file=sys.stderr)
+        print("  ls [path] [--recursive]", file=sys.stderr)
         print("  get-file-contents <path>", file=sys.stderr)
         print("  export-shared-link <url> [--path <path>] [--password <password>] [--override-download]", file=sys.stderr)
         print("  get-metadata <path>", file=sys.stderr)
@@ -690,7 +777,48 @@ def main():
     start_time = time.time()
 
     try:
-        if command == "get-file-contents":
+        if command == "search":
+            if len(sys.argv) < 3:
+                print("Error: Missing query argument", file=sys.stderr)
+                sys.exit(1)
+
+            query = sys.argv[2]
+            search_path = ""
+            extensions = None
+            categories = None
+
+            i = 3
+            while i < len(sys.argv):
+                if sys.argv[i] == "--path" and i + 1 < len(sys.argv):
+                    search_path = sys.argv[i + 1]
+                    i += 2
+                elif sys.argv[i] == "--ext" and i + 1 < len(sys.argv):
+                    extensions = [e.strip() for e in sys.argv[i + 1].split(",")]
+                    i += 2
+                elif sys.argv[i] == "--cat" and i + 1 < len(sys.argv):
+                    categories = [c.strip() for c in sys.argv[i + 1].split(",")]
+                    i += 2
+                else:
+                    i += 1
+
+            files = client.search(query, path=search_path, file_extensions=extensions,
+                                  file_categories=categories)
+            print(f"Found {len(files)} results:")
+            for f in files:
+                mod = f["modified"][:10] if f["modified"] else ""
+                print(f"  {f['name']}  [{f['type']}]  {mod}  {f['path']}")
+
+        elif command == "ls":
+            folder_path = sys.argv[2] if len(sys.argv) > 2 else ""
+            recursive = "--recursive" in sys.argv
+
+            files = client.list_folder(folder_path, recursive=recursive)
+            print(f"Found {len(files)} items:")
+            for f in files:
+                mod = f["modified"][:10] if f["modified"] else ""
+                print(f"  {f['name']}  [{f['type']}]  {mod}  {f['path']}")
+
+        elif command == "get-file-contents":
             if len(sys.argv) < 3:
                 print("Error: Missing path argument", file=sys.stderr)
                 sys.exit(1)
