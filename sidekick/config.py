@@ -69,15 +69,38 @@ def get_atlassian_config() -> dict:
     Loads from .env file first, then falls back to system environment variables.
     Supports legacy JIRA_* variables for backward compatibility.
 
+    Two auth modes:
+    1. OAuth2 (recommended): ATLASSIAN_CLIENT_ID, ATLASSIAN_CLIENT_SECRET,
+       ATLASSIAN_REFRESH_TOKEN, ATLASSIAN_CLOUD_ID — tokens auto-refresh
+    2. Basic Auth (legacy): ATLASSIAN_URL, ATLASSIAN_EMAIL, ATLASSIAN_API_TOKEN
+       — API tokens expire after ~1 year, require manual renewal
+
     Returns:
-        dict with keys: url, email, api_token
+        dict with keys depending on auth mode:
+        - OAuth2: client_id, client_secret, refresh_token, cloud_id, auth_mode="oauth2"
+        - Basic Auth: url, email, api_token, auth_mode="basic"
 
     Raises:
         ValueError: If required environment variables are missing
     """
     env_file_vars = _load_env_file()
 
-    # Try new ATLASSIAN_* variables first
+    # Try OAuth2 first (recommended)
+    client_id = _get_env("ATLASSIAN_CLIENT_ID", env_file_vars)
+    client_secret = _get_env("ATLASSIAN_CLIENT_SECRET", env_file_vars)
+    refresh_token = _get_env("ATLASSIAN_REFRESH_TOKEN", env_file_vars)
+    cloud_id = _get_env("ATLASSIAN_CLOUD_ID", env_file_vars)
+
+    if all([client_id, client_secret, refresh_token, cloud_id]):
+        return {
+            "auth_mode": "oauth2",
+            "client_id": client_id,
+            "client_secret": client_secret,
+            "refresh_token": refresh_token,
+            "cloud_id": cloud_id,
+        }
+
+    # Fallback to Basic Auth
     url = _get_env("ATLASSIAN_URL", env_file_vars)
     email = _get_env("ATLASSIAN_EMAIL", env_file_vars)
     api_token = _get_env("ATLASSIAN_API_TOKEN", env_file_vars)
@@ -90,19 +113,22 @@ def get_atlassian_config() -> dict:
     if not api_token:
         api_token = _get_env("JIRA_API_TOKEN", env_file_vars)
 
-    if not all([url, email, api_token]):
-        raise ValueError(
-            "Missing required Atlassian configuration. "
-            "Set ATLASSIAN_URL, ATLASSIAN_EMAIL, and ATLASSIAN_API_TOKEN "
-            "in .env file or environment variables. "
-            "(Legacy JIRA_* variables are also supported for backward compatibility.)"
-        )
+    if all([url, email, api_token]):
+        return {
+            "auth_mode": "basic",
+            "url": url,
+            "email": email,
+            "api_token": api_token,
+        }
 
-    return {
-        "url": url,
-        "email": email,
-        "api_token": api_token
-    }
+    raise ValueError(
+        "Missing required Atlassian configuration.\n"
+        "Option 1 (recommended): Set ATLASSIAN_CLIENT_ID, ATLASSIAN_CLIENT_SECRET, "
+        "ATLASSIAN_REFRESH_TOKEN, and ATLASSIAN_CLOUD_ID in .env file. "
+        "Run: python3 tools/get_atlassian_refresh_token.py\n"
+        "Option 2 (legacy): Set ATLASSIAN_URL, ATLASSIAN_EMAIL, and ATLASSIAN_API_TOKEN "
+        "in .env file. (Legacy JIRA_* variables also supported.)"
+    )
 
 
 def get_groups() -> dict:

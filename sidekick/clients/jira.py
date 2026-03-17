@@ -11,43 +11,167 @@ import urllib.error
 from typing import Optional
 
 
-class JiraClient:
-    """JIRA API client using native Python stdlib."""
+def _update_env_refresh_token(new_token: str) -> None:
+    """Update ATLASSIAN_REFRESH_TOKEN in .env file with new rotating token.
 
-    def __init__(self, base_url: str, email: str, api_token: str, timeout: int = 30):
-        """Initialize JIRA client with basic auth.
+    Atlassian OAuth2 uses rotating refresh tokens — each token refresh returns
+    a new refresh token. This function saves the new token to .env so it
+    persists across sessions.
+
+    Args:
+        new_token: New refresh token from Atlassian OAuth2 token response
+    """
+    from pathlib import Path
+    env_path = Path(__file__).parent.parent.parent / ".env"
+
+    if not env_path.exists():
+        return
+
+    try:
+        content = env_path.read_text()
+        lines = content.split('\n')
+        updated = False
+
+        for i, line in enumerate(lines):
+            stripped = line.strip()
+            if stripped.startswith('ATLASSIAN_REFRESH_TOKEN='):
+                lines[i] = f'ATLASSIAN_REFRESH_TOKEN={new_token}'
+                updated = True
+                break
+
+        if updated:
+            env_path.write_text('\n'.join(lines))
+    except Exception:
+        # Non-fatal — token is still in memory for this session
+        pass
+
+
+class JiraClient:
+    """JIRA API client using native Python stdlib.
+
+    Supports two auth modes:
+    1. OAuth2 (recommended): Uses refresh tokens, auto-refreshes on expiry
+    2. Basic Auth (legacy): Uses email + API token
+    """
+
+    def __init__(self, base_url: Optional[str] = None, email: Optional[str] = None,
+                 api_token: Optional[str] = None, client_id: Optional[str] = None,
+                 client_secret: Optional[str] = None, refresh_token: Optional[str] = None,
+                 cloud_id: Optional[str] = None, timeout: int = 30):
+        """Initialize JIRA client.
+
+        Two modes:
+        1. OAuth2 (recommended): provide client_id, client_secret, refresh_token, cloud_id
+        2. Basic Auth (legacy): provide base_url, email, api_token
 
         Args:
-            base_url: JIRA instance URL (e.g., https://company.atlassian.net)
-            email: User email for authentication
-            api_token: API token for authentication
+            base_url: JIRA instance URL for Basic Auth (e.g., https://company.atlassian.net)
+            email: User email for Basic Auth
+            api_token: API token for Basic Auth
+            client_id: OAuth2 app client ID
+            client_secret: OAuth2 app client secret
+            refresh_token: OAuth2 refresh token (long-lived, rotating)
+            cloud_id: Atlassian Cloud site ID (from accessible-resources)
             timeout: Request timeout in seconds
         """
-        self.base_url = base_url.rstrip('/')
-        self.email = email
-        self.api_token = api_token
         self.timeout = timeout
         self.api_version = "3"  # JIRA Cloud API v3
         self.api_call_count = 0  # Track API calls for debugging
 
+        # Determine auth mode
+        if client_id and client_secret and refresh_token and cloud_id:
+            self.auth_mode = "oauth2"
+            self.client_id = client_id
+            self.client_secret = client_secret
+            self.refresh_token = refresh_token
+            self.cloud_id = cloud_id
+            self.base_url = f"https://api.atlassian.com/ex/jira/{cloud_id}"
+            self.access_token = None
+            # Get initial access token
+            self._refresh_access_token()
+        elif base_url and email and api_token:
+            self.auth_mode = "basic"
+            self.base_url = base_url.rstrip('/')
+            self.email = email
+            self.api_token = api_token
+        else:
+            raise ValueError(
+                "Provide either OAuth2 credentials (client_id, client_secret, "
+                "refresh_token, cloud_id) or Basic Auth credentials (base_url, "
+                "email, api_token)"
+            )
+
+    def _refresh_access_token(self):
+        """Use refresh token to obtain a new access token.
+
+        Atlassian uses rotating refresh tokens — each refresh returns a new
+        refresh token that replaces the old one. The new refresh token is
+        saved back to the .env file automatically.
+
+        Raises:
+            ValueError: If refresh token is invalid or revoked
+            ConnectionError: If network error occurs
+        """
+        url = "https://auth.atlassian.com/oauth/token"
+        data = urllib.parse.urlencode({
+            "grant_type": "refresh_token",
+            "client_id": self.client_id,
+            "client_secret": self.client_secret,
+            "refresh_token": self.refresh_token,
+        }).encode('utf-8')
+
+        req = urllib.request.Request(url, data=data, method='POST')
+        req.add_header("Content-Type", "application/x-www-form-urlencoded")
+
+        try:
+            with urllib.request.urlopen(req, timeout=self.timeout) as response:
+                result = json.loads(response.read().decode('utf-8'))
+                self.access_token = result["access_token"]
+
+                # Atlassian uses rotating refresh tokens
+                new_refresh_token = result.get("refresh_token")
+                if new_refresh_token and new_refresh_token != self.refresh_token:
+                    self.refresh_token = new_refresh_token
+                    _update_env_refresh_token(new_refresh_token)
+
+        except urllib.error.HTTPError as e:
+            error_body = e.read().decode('utf-8') if e.fp else ''
+            raise ValueError(
+                f"Failed to refresh Atlassian access token ({e.code}): {error_body}. "
+                f"Your refresh token may be invalid or revoked. "
+                f"Run: python3 tools/get_atlassian_refresh_token.py to get a new one."
+            )
+        except urllib.error.URLError as e:
+            raise ConnectionError(f"Network error refreshing Atlassian token: {e.reason}")
+
     def _get_auth_headers(self) -> dict:
-        """Generate Basic Auth headers."""
-        credentials = f"{self.email}:{self.api_token}"
-        encoded = base64.b64encode(credentials.encode()).decode()
-        return {
-            "Authorization": f"Basic {encoded}",
-            "Content-Type": "application/json",
-            "Accept": "application/json"
-        }
+        """Generate auth headers based on auth mode."""
+        if self.auth_mode == "oauth2":
+            return {
+                "Authorization": f"Bearer {self.access_token}",
+                "Content-Type": "application/json",
+                "Accept": "application/json"
+            }
+        else:
+            credentials = f"{self.email}:{self.api_token}"
+            encoded = base64.b64encode(credentials.encode()).decode()
+            return {
+                "Authorization": f"Basic {encoded}",
+                "Content-Type": "application/json",
+                "Accept": "application/json"
+            }
 
     def _request(
         self,
         method: str,
         endpoint: str,
         params: Optional[dict] = None,
-        json_data: Optional[dict] = None
+        json_data: Optional[dict] = None,
+        _retried: bool = False
     ) -> dict:
         """Make HTTP request to JIRA API.
+
+        Automatically retries once on 401 if using OAuth2 (refreshes token).
 
         Args:
             method: HTTP method (GET, POST, PUT)
@@ -85,9 +209,28 @@ class JiraClient:
             error_body = e.read().decode() if e.fp else ""
             if e.code == 404:
                 raise ValueError(f"Resource not found: {url}")
-            elif e.code == 401 or e.code == 403:
-                # Parse error details for better messaging
-                error_message = "Authentication failed"
+            elif e.code == 401:
+                # Auto-refresh and retry once for OAuth2
+                if self.auth_mode == "oauth2" and not _retried:
+                    self._refresh_access_token()
+                    return self._request(method, endpoint, params, json_data, _retried=True)
+
+                if self.auth_mode == "oauth2":
+                    raise ValueError(
+                        f"JIRA authentication failed (HTTP 401) after token refresh.\n"
+                        f"Your OAuth2 refresh token may be revoked.\n"
+                        f"Run: python3 tools/get_atlassian_refresh_token.py to re-authorize."
+                    )
+                else:
+                    raise ValueError(
+                        f"JIRA authentication failed (HTTP 401).\n"
+                        f"Your API token may be expired or invalid.\n"
+                        f"To fix this:\n"
+                        f"  1. Generate a new API token at: https://id.atlassian.com/manage-profile/security/api-tokens\n"
+                        f"  2. Update ATLASSIAN_API_TOKEN in your .env file"
+                    )
+            elif e.code == 403:
+                error_message = "Access forbidden"
                 try:
                     error_data = json.loads(error_body) if error_body else {}
                     error_messages = error_data.get("errorMessages", [])
@@ -95,16 +238,9 @@ class JiraClient:
                         error_message = ", ".join(error_messages)
                 except (json.JSONDecodeError, KeyError):
                     pass
-
-                # Provide actionable error message for expired/invalid tokens
                 raise ValueError(
-                    f"JIRA authentication failed (HTTP {e.code}): {error_message}\n"
-                    f"\n"
-                    f"Your JIRA access token may be expired or invalid.\n"
-                    f"To fix this:\n"
-                    f"  1. Generate a new API token at: https://id.atlassian.com/manage-profile/security/api-tokens\n"
-                    f"  2. Update the JIRA_API_TOKEN in your .env file\n"
-                    f"  3. Verify your JIRA_EMAIL matches the account that created the token"
+                    f"JIRA access forbidden (HTTP 403): {error_message}\n"
+                    f"Check that your account has permission for this operation."
                 )
             elif 400 <= e.code < 500:
                 raise ValueError(f"Client error {e.code}: {error_body}")
@@ -832,11 +968,19 @@ def main():
         start_time = time.time()
 
         config = get_atlassian_config()
-        client = JiraClient(
-            base_url=config["url"],
-            email=config["email"],
-            api_token=config["api_token"]
-        )
+        if config.get("auth_mode") == "oauth2":
+            client = JiraClient(
+                client_id=config["client_id"],
+                client_secret=config["client_secret"],
+                refresh_token=config["refresh_token"],
+                cloud_id=config["cloud_id"],
+            )
+        else:
+            client = JiraClient(
+                base_url=config["url"],
+                email=config["email"],
+                api_token=config["api_token"],
+            )
 
         command = sys.argv[1]
 

@@ -245,46 +245,125 @@ def _validate_emails(emails: list) -> list:
 
 
 class ConfluenceClient:
-    """Confluence API client using native Python stdlib."""
+    """Confluence API client using native Python stdlib.
 
-    def __init__(self, base_url: str, email: str, api_token: str, timeout: int = 30):
-        """Initialize Confluence client with basic auth.
+    Supports two auth modes:
+    1. OAuth2 (recommended): Uses refresh tokens, auto-refreshes on expiry
+    2. Basic Auth (legacy): Uses email + API token
+    """
+
+    def __init__(self, base_url: Optional[str] = None, email: Optional[str] = None,
+                 api_token: Optional[str] = None, client_id: Optional[str] = None,
+                 client_secret: Optional[str] = None, refresh_token: Optional[str] = None,
+                 cloud_id: Optional[str] = None, timeout: int = 30):
+        """Initialize Confluence client.
+
+        Two modes:
+        1. OAuth2 (recommended): provide client_id, client_secret, refresh_token, cloud_id
+        2. Basic Auth (legacy): provide base_url, email, api_token
 
         Args:
-            base_url: Confluence instance URL (e.g., https://company.atlassian.net)
-            email: User email for authentication
-            api_token: API token for authentication (same as JIRA token)
+            base_url: Confluence instance URL for Basic Auth
+            email: User email for Basic Auth
+            api_token: API token for Basic Auth
+            client_id: OAuth2 app client ID
+            client_secret: OAuth2 app client secret
+            refresh_token: OAuth2 refresh token (long-lived, rotating)
+            cloud_id: Atlassian Cloud site ID
             timeout: Request timeout in seconds
         """
-        self.base_url = base_url.rstrip('/')
-        self.email = email
-        self.api_token = api_token
         self.timeout = timeout
-        self.api_call_count = 0  # Track API calls for debugging
+        self.api_call_count = 0
         self.search_cache = SearchCache()
 
+        if client_id and client_secret and refresh_token and cloud_id:
+            self.auth_mode = "oauth2"
+            self.client_id = client_id
+            self.client_secret = client_secret
+            self.refresh_token = refresh_token
+            self.cloud_id = cloud_id
+            self.base_url = f"https://api.atlassian.com/ex/confluence/{cloud_id}"
+            self.access_token = None
+            self._refresh_access_token()
+        elif base_url and email and api_token:
+            self.auth_mode = "basic"
+            self.base_url = base_url.rstrip('/')
+            self.email = email
+            self.api_token = api_token
+        else:
+            raise ValueError(
+                "Provide either OAuth2 credentials (client_id, client_secret, "
+                "refresh_token, cloud_id) or Basic Auth credentials (base_url, "
+                "email, api_token)"
+            )
+
+    def _refresh_access_token(self):
+        """Use refresh token to obtain a new access token.
+
+        Atlassian uses rotating refresh tokens — each refresh returns a new
+        refresh token. The new token is saved to .env automatically.
+        """
+        url = "https://auth.atlassian.com/oauth/token"
+        data = urllib.parse.urlencode({
+            "grant_type": "refresh_token",
+            "client_id": self.client_id,
+            "client_secret": self.client_secret,
+            "refresh_token": self.refresh_token,
+        }).encode('utf-8')
+
+        req = urllib.request.Request(url, data=data, method='POST')
+        req.add_header("Content-Type", "application/x-www-form-urlencoded")
+
+        try:
+            with urllib.request.urlopen(req, timeout=self.timeout) as response:
+                result = json.loads(response.read().decode('utf-8'))
+                self.access_token = result["access_token"]
+                new_refresh_token = result.get("refresh_token")
+                if new_refresh_token and new_refresh_token != self.refresh_token:
+                    self.refresh_token = new_refresh_token
+                    from sidekick.clients.jira import _update_env_refresh_token
+                    _update_env_refresh_token(new_refresh_token)
+        except urllib.error.HTTPError as e:
+            error_body = e.read().decode('utf-8') if e.fp else ''
+            raise ValueError(
+                f"Failed to refresh Atlassian access token ({e.code}): {error_body}. "
+                f"Run: python3 tools/get_atlassian_refresh_token.py to re-authorize."
+            )
+        except urllib.error.URLError as e:
+            raise ConnectionError(f"Network error refreshing Atlassian token: {e.reason}")
+
     def _get_auth_headers(self) -> dict:
-        """Generate Basic Auth headers.
+        """Generate auth headers based on auth mode.
 
         Returns:
             dict with Authorization, Content-Type, and Accept headers
         """
-        credentials = f"{self.email}:{self.api_token}"
-        encoded = base64.b64encode(credentials.encode()).decode()
-        return {
-            "Authorization": f"Basic {encoded}",
-            "Content-Type": "application/json",
-            "Accept": "application/json"
-        }
+        if self.auth_mode == "oauth2":
+            return {
+                "Authorization": f"Bearer {self.access_token}",
+                "Content-Type": "application/json",
+                "Accept": "application/json"
+            }
+        else:
+            credentials = f"{self.email}:{self.api_token}"
+            encoded = base64.b64encode(credentials.encode()).decode()
+            return {
+                "Authorization": f"Basic {encoded}",
+                "Content-Type": "application/json",
+                "Accept": "application/json"
+            }
 
     def _request(
         self,
         method: str,
         endpoint: str,
         params: Optional[dict] = None,
-        json_data: Optional[dict] = None
+        json_data: Optional[dict] = None,
+        _retried: bool = False
     ) -> dict:
         """Make HTTP request to Confluence API.
+
+        Automatically retries once on 401 if using OAuth2 (refreshes token).
 
         Args:
             method: HTTP method (GET, POST, PUT, DELETE)
@@ -327,20 +406,26 @@ class ConfluenceClient:
             if e.code == 404:
                 raise ValueError(f"Resource not found: {url}")
 
-            elif e.code == 401 or e.code == 403:
-                # Parse error details for better messaging
-                error_message = "Authentication failed"
+            elif e.code == 401:
+                if self.auth_mode == "oauth2" and not _retried:
+                    self._refresh_access_token()
+                    return self._request(method, endpoint, params, json_data, _retried=True)
+                raise ValueError(
+                    f"Confluence authentication failed (HTTP 401).\n"
+                    "Run: python3 tools/get_atlassian_refresh_token.py to re-authorize."
+                )
+
+            elif e.code == 403:
+                error_message = "Access forbidden"
                 try:
                     error_data = json.loads(error_body) if error_body else {}
                     if "message" in error_data:
                         error_message = error_data["message"]
                 except (json.JSONDecodeError, KeyError):
                     pass
-
                 raise ValueError(
-                    f"Confluence authentication failed (HTTP {e.code}): {error_message}\n"
-                    "Check your credentials and permissions.\n"
-                    "Generate a new token at: https://id.atlassian.com/manage-profile/security/api-tokens"
+                    f"Confluence access forbidden (HTTP 403): {error_message}\n"
+                    "Check that your account has permission for this operation."
                 )
 
             elif e.code == 409:
@@ -1311,11 +1396,19 @@ def main():
         start_time = time.time()
 
         config = get_atlassian_config()
-        client = ConfluenceClient(
-            base_url=config["url"],
-            email=config["email"],
-            api_token=config["api_token"]
-        )
+        if config.get("auth_mode") == "oauth2":
+            client = ConfluenceClient(
+                client_id=config["client_id"],
+                client_secret=config["client_secret"],
+                refresh_token=config["refresh_token"],
+                cloud_id=config["cloud_id"],
+            )
+        else:
+            client = ConfluenceClient(
+                base_url=config["url"],
+                email=config["email"],
+                api_token=config["api_token"],
+            )
 
         command = sys.argv[1]
 
