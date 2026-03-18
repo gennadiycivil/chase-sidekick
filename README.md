@@ -1,8 +1,14 @@
-# Chase Sidekick
+# Misterg Sidekick
 
 **Build your own engineering manager toolkit, one command at a time.**
 
-Sidekick is playground for using Claude Code not for coding per-se, but to automate real work tasks using your favorite products. You write code, but the skills and agents are about personal productivity in Confluence, JIRA, etc. You're  building and running a set of super powers to enable Claude Code to get go into your everyday tools to get context, and then take action. 
+Sidekick is a playground for using Claude Code not for coding per-se, but to automate real work tasks using your favorite products. You write code, but the skills and agents are about personal productivity in Confluence, JIRA, etc. You're building and running a set of super powers to enable Claude Code to go into your everyday tools to get context, and then take action.
+
+## Attribution
+
+Originally forked from [chase-seibert/chase-sidekick](https://github.com/chase-seibert/chase-sidekick).
+The initial project structure, design philosophy, and several clients were created by Chase Seibert.
+This fork has since diverged significantly with additional clients (Slack, Zoom, Google Docs, Google Drive, Google Slides) and OAuth2 integration.
 
 ## What You Can Ask For
 
@@ -64,8 +70,8 @@ Get running in 60 seconds with the JIRA skill:
 
 ```bash
 # Clone and setup
-git clone https://github.com/yourusername/chase-sidekick.git
-cd chase-sidekick
+git clone https://github.com/gennadiycivil/misterg-sidekick.git
+cd misterg-sidekick
 
 # Configure credentials
 cp .env.example .env
@@ -233,7 +239,7 @@ This is by design - you see results immediately - but be aware:
 ## Project Structure
 
 ```
-chase-sidekick/
+misterg-sidekick/
 ├── .claude/
 │   ├── skills/              # Command documentation (Claude reads these)
 │   │   ├── jira/
@@ -275,14 +281,19 @@ chase-sidekick/
 
 Current skills (each is a single-file client + markdown docs):
 
-- **JIRA** - Query issues, traverse hierarchies, manage labels
-- **Confluence** - Search pages, read/write content, manage 1:1 docs
-- **Chrome** - Query browsing history, search visited pages, filter by service (Confluence, JIRA, Paper, etc.)
-- **Dropbox** - Read/write files and Paper docs
+- **JIRA** - Query issues, traverse hierarchies, manage labels (OAuth2 + Basic Auth)
+- **Confluence** - Search pages, read/write content, manage 1:1 docs (OAuth2 + Basic Auth)
+- **Slack** - Search channels, read messages, threads, saved items
+- **Zoom** - Meeting transcripts, AI Companion summaries, calendar-based discovery
+- **Chrome** - Query browsing history, search visited pages, filter by service
+- **Dropbox** - Read/write files and Paper docs (OAuth2 refresh tokens)
 - **OmniFocus** - Task management (macOS only)
 - **Gmail** - Search messages, create drafts
 - **Google Calendar** - Manage events
 - **Google Sheets** - CSV import/export
+- **Google Docs** - Read, create, and write documents with markdown formatting
+- **Google Drive** - Search files by name, full-text search, browse folders
+- **Google Slides** - Read/edit presentations, extract text, replace content
 - **Markdown to PDF** - Convert docs with pandoc
 - **Transcript** - Save conversation transcripts as markdown to memory/transcripts
 - **Welcome Doc** - Create personalized employee onboarding documents in Confluence
@@ -367,13 +378,17 @@ See individual skill documentation for detailed command usage:
 
 - [JIRA](.claude/skills/jira/README.md) - Query issues, traverse hierarchies, manage labels
 - [Confluence](.claude/skills/confluence/README.md) - Search pages, read/write content, manage 1:1 docs
+- [Slack](.claude/skills/slack/README.md) - Search channels, read messages, threads, saved items
+- [Zoom](.claude/skills/zoom/README.md) - Meeting transcripts, AI Companion summaries
 - [Chrome](.claude/skills/chrome/README.md) - Query browsing history, search visited pages, filter by service
 - [OmniFocus](.claude/skills/omnifocus/README.md) - Task management (macOS only)
 - [Dropbox](.claude/skills/dropbox/README.md) - Read/write files and Paper docs
 - [Gmail](.claude/skills/gmail/README.md) - Search messages, create drafts
 - [Google Calendar](.claude/skills/gcalendar/README.md) - Manage events
 - [Google Sheets](.claude/skills/gsheets/README.md) - CSV import/export
-- [Memory Management](.claude/skills/memory/README.md) - Save command outputs with metadata
+- [Google Docs](.claude/skills/gdocs/README.md) - Read, create, write documents
+- [Google Drive](.claude/skills/gdrive/README.md) - Search files, browse folders
+- [Google Slides](.claude/skills/gslides/README.md) - Read/edit presentations
 - [Markdown to PDF](.claude/skills/markdown-pdf/README.md) - Convert docs with pandoc
 - [Transcript](.claude/skills/transcript/README.md) - Save conversation transcripts to memory/transcripts
 - [Welcome Doc](.claude/skills/welcome-doc/README.md) - Create personalized employee onboarding documents

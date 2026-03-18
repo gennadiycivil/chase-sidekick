@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Chase Sidekick is an engineering manager task automation toolkit. The project provides:
+Misterg Sidekick is an engineering manager task automation toolkit (originally forked from [chase-seibert/chase-sidekick](https://github.com/chase-seibert/chase-sidekick)). The project provides:
 
 - **Clients**: Single-file Python interfaces to external services (JIRA, Slack, etc.)
 - **Skills**: Markdown documentation showing command-line usage patterns
