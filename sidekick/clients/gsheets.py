@@ -424,6 +424,114 @@ class GSheetsClient:
             json_data=request_body
         )
 
+    def update_rich_text(
+        self,
+        spreadsheet_id: str,
+        sheet_name: str,
+        row: int,
+        col: int,
+        text: str,
+        links: Optional[dict] = None
+    ) -> dict:
+        """Update a cell with rich text containing inline hyperlinks.
+
+        Uses the spreadsheets.batchUpdate API with updateCells to support
+        textFormatRuns, which enable inline hyperlinks within cell text.
+
+        Args:
+            spreadsheet_id: The spreadsheet ID
+            sheet_name: Name of the sheet
+            row: 0-based row index
+            col: 0-based column index
+            text: The full cell text
+            links: Dict mapping substrings to URLs. Each occurrence of the
+                   substring in text will be hyperlinked to the URL.
+                   e.g., {"WEBXP-7037": "https://dropbox.atlassian.net/browse/WEBXP-7037"}
+
+        Returns:
+            BatchUpdate response dict
+        """
+        # Get sheet ID from sheet name
+        spreadsheet = self._request("GET", f"/spreadsheets/{spreadsheet_id}")
+        sheet_id = None
+        for sheet in spreadsheet.get("sheets", []):
+            if sheet["properties"]["title"] == sheet_name:
+                sheet_id = sheet["properties"]["sheetId"]
+                break
+        if sheet_id is None:
+            raise ValueError(f"Sheet '{sheet_name}' not found")
+
+        # Build textFormatRuns from links dict
+        # Each run specifies formatting starting at a character index
+        if links:
+            # Find all link positions in text
+            link_ranges = []  # [(start, end, url), ...]
+            for substring, url in links.items():
+                start = 0
+                while True:
+                    idx = text.find(substring, start)
+                    if idx == -1:
+                        break
+                    link_ranges.append((idx, idx + len(substring), url))
+                    start = idx + len(substring)
+
+            # Sort by start position
+            link_ranges.sort(key=lambda x: x[0])
+
+            # Build textFormatRuns
+            text_format_runs = []
+            pos = 0
+            for start, end, url in link_ranges:
+                # Plain text run before this link (if any gap)
+                if start > pos:
+                    text_format_runs.append({
+                        "startIndex": pos,
+                        "format": {}
+                    })
+                # Linked text run
+                text_format_runs.append({
+                    "startIndex": start,
+                    "format": {"link": {"uri": url}}
+                })
+                # Reset format after link
+                pos = end
+
+            # Final plain text run after last link
+            if pos < len(text):
+                text_format_runs.append({
+                    "startIndex": pos,
+                    "format": {}
+                })
+        else:
+            text_format_runs = []
+
+        # Build the cell data
+        cell_data = {
+            "userEnteredValue": {"stringValue": text},
+        }
+        if text_format_runs:
+            cell_data["textFormatRuns"] = text_format_runs
+
+        request_body = {
+            "requests": [{
+                "updateCells": {
+                    "rows": [{"values": [cell_data]}],
+                    "fields": "userEnteredValue,textFormatRuns",
+                    "start": {
+                        "sheetId": sheet_id,
+                        "rowIndex": row,
+                        "columnIndex": col
+                    }
+                }
+            }]
+        }
+
+        return self._request(
+            "POST",
+            f"/spreadsheets/{spreadsheet_id}:batchUpdate",
+            json_data=request_body
+        )
+
     def clear_sheet(self, spreadsheet_id: str, range_name: str = "Sheet1") -> dict:
         """Clear all values in a sheet.
 
