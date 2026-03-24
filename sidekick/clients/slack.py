@@ -349,6 +349,38 @@ class SlackClient:
             payload["thread_ts"] = thread_ts
         return self._request("POST", "chat.postMessage", json_data=payload)
 
+    def schedule_message(
+        self,
+        channel_id: str,
+        text: str,
+        post_at: int,
+        thread_ts: str = None
+    ) -> dict:
+        """Schedule a message to be sent at a future time.
+
+        Args:
+            channel_id: Channel, DM, or group ID
+            text: Message text
+            post_at: Unix timestamp for when to send (must be in the future)
+            thread_ts: Optional thread timestamp to reply in a thread
+
+        Returns:
+            Dict with scheduled_message_id and post_at
+
+        Raises:
+            ValueError: If channel_id or text is empty
+        """
+        if not channel_id or not text:
+            raise ValueError("channel_id and text are required")
+        payload = {
+            "channel": channel_id,
+            "text": text,
+            "post_at": post_at
+        }
+        if thread_ts:
+            payload["thread_ts"] = thread_ts
+        return self._request("POST", "chat.scheduleMessage", json_data=payload)
+
     def search_messages(
         self,
         query: str,
