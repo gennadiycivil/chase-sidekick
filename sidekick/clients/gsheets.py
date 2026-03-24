@@ -431,12 +431,13 @@ class GSheetsClient:
         row: int,
         col: int,
         text: str,
-        links: Optional[dict] = None
+        links: Optional[dict] = None,
+        bold: Optional[List[str]] = None
     ) -> dict:
-        """Update a cell with rich text containing inline hyperlinks.
+        """Update a cell with rich text containing inline hyperlinks and bold.
 
         Uses the spreadsheets.batchUpdate API with updateCells to support
-        textFormatRuns, which enable inline hyperlinks within cell text.
+        textFormatRuns, which enable inline hyperlinks and bold within cell text.
 
         Args:
             spreadsheet_id: The spreadsheet ID
@@ -446,7 +447,9 @@ class GSheetsClient:
             text: The full cell text
             links: Dict mapping substrings to URLs. Each occurrence of the
                    substring in text will be hyperlinked to the URL.
-                   e.g., {"WEBXP-7037": "https://dropbox.atlassian.net/browse/WEBXP-7037"}
+                   e.g., {"WEBXP-7037": "https://...browse/WEBXP-7037"}
+            bold: List of substrings to render in bold.
+                  e.g., ["Was the Sprint Goal achieved?", "What did we ship?"]
 
         Returns:
             BatchUpdate response dict
@@ -461,49 +464,49 @@ class GSheetsClient:
         if sheet_id is None:
             raise ValueError(f"Sheet '{sheet_name}' not found")
 
-        # Build textFormatRuns from links dict
-        # Each run specifies formatting starting at a character index
+        # Build a format map: for each character position, track formatting
+        # Format: {position: {"bold": bool, "link_uri": str or None}}
+        char_formats = [{"bold": False, "link_uri": None} for _ in range(len(text))]
+
+        # Apply bold ranges
+        if bold:
+            for substring in bold:
+                start = 0
+                while True:
+                    idx = text.find(substring, start)
+                    if idx == -1:
+                        break
+                    for i in range(idx, idx + len(substring)):
+                        char_formats[i]["bold"] = True
+                    start = idx + len(substring)
+
+        # Apply link ranges
         if links:
-            # Find all link positions in text
-            link_ranges = []  # [(start, end, url), ...]
             for substring, url in links.items():
                 start = 0
                 while True:
                     idx = text.find(substring, start)
                     if idx == -1:
                         break
-                    link_ranges.append((idx, idx + len(substring), url))
+                    for i in range(idx, idx + len(substring)):
+                        char_formats[i]["link_uri"] = url
                     start = idx + len(substring)
 
-            # Sort by start position
-            link_ranges.sort(key=lambda x: x[0])
-
-            # Build textFormatRuns
-            text_format_runs = []
-            pos = 0
-            for start, end, url in link_ranges:
-                # Plain text run before this link (if any gap)
-                if start > pos:
+        # Convert char_formats into textFormatRuns by detecting format changes
+        text_format_runs = []
+        if char_formats:
+            current_fmt = char_formats[0]
+            text_format_runs.append({
+                "startIndex": 0,
+                "format": self._build_format(current_fmt)
+            })
+            for i in range(1, len(char_formats)):
+                if char_formats[i] != current_fmt:
+                    current_fmt = char_formats[i]
                     text_format_runs.append({
-                        "startIndex": pos,
-                        "format": {}
+                        "startIndex": i,
+                        "format": self._build_format(current_fmt)
                     })
-                # Linked text run
-                text_format_runs.append({
-                    "startIndex": start,
-                    "format": {"link": {"uri": url}}
-                })
-                # Reset format after link
-                pos = end
-
-            # Final plain text run after last link
-            if pos < len(text):
-                text_format_runs.append({
-                    "startIndex": pos,
-                    "format": {}
-                })
-        else:
-            text_format_runs = []
 
         # Build the cell data
         cell_data = {
@@ -531,6 +534,16 @@ class GSheetsClient:
             f"/spreadsheets/{spreadsheet_id}:batchUpdate",
             json_data=request_body
         )
+
+    @staticmethod
+    def _build_format(char_fmt: dict) -> dict:
+        """Build a textFormatRun format dict from a char format."""
+        fmt = {}
+        if char_fmt.get("bold"):
+            fmt["bold"] = True
+        if char_fmt.get("link_uri"):
+            fmt["link"] = {"uri": char_fmt["link_uri"]}
+        return fmt
 
     def clear_sheet(self, spreadsheet_id: str, range_name: str = "Sheet1") -> dict:
         """Clear all values in a sheet.

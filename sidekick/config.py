@@ -406,3 +406,29 @@ def get_slack_config() -> dict:
         )
 
     return {"bot_token": bot_token, "user_token": user_token}
+
+
+def get_sprint_report_config() -> dict:
+    """Get Sprint Report configuration from .env file or environment variables.
+
+    Auth uses browser session cookies from core-analytics-server.pp.dropbox.com.
+    Cookies expire periodically and must be refreshed from a browser session.
+
+    Returns:
+        dict with key: cookies
+
+    Raises:
+        ValueError: If SPRINT_REPORT_COOKIES is not set
+    """
+    env_file_vars = _load_env_file()
+
+    cookies = _get_env("SPRINT_REPORT_COOKIES", env_file_vars)
+
+    if not cookies:
+        raise ValueError(
+            "Missing required Sprint Report configuration. "
+            "Set SPRINT_REPORT_COOKIES in .env file. "
+            "See .claude/skills/sprint-report/README.md for setup instructions."
+        )
+
+    return {"cookies": cookies}
