@@ -90,11 +90,32 @@ class GDocsClient:
             raise ConnectionError(f"Network error: {e.reason}")
 
     @staticmethod
-    def extract_document_id(url: str) -> str:
+    def extract_document_id(url: str) -> tuple:
+        """Extract document ID and optional tab ID from a Google Docs URL.
+
+        Args:
+            url: Google Docs URL (may include ?tab=... parameter)
+
+        Returns:
+            Tuple of (document_id, tab_id) where tab_id is None if not specified
+
+        Example:
+            >>> extract_document_id("https://docs.google.com/document/d/ABC123/edit?tab=t.xyz")
+            ('ABC123', 't.xyz')
+        """
         if "/document/d/" in url:
             parts = url.split("/document/d/")
             if len(parts) > 1:
-                return parts[1].split("/")[0].split("?")[0].split("#")[0]
+                # Extract document ID
+                doc_id = parts[1].split("/")[0].split("?")[0].split("#")[0]
+
+                # Extract tab ID if present
+                tab_id = None
+                if "?tab=" in url:
+                    tab_part = url.split("?tab=")[1].split("&")[0].split("#")[0]
+                    tab_id = tab_part
+
+                return (doc_id, tab_id)
         raise ValueError(f"Invalid Google Docs URL: {url}")
 
     def create_document(self, title: str) -> dict:
@@ -110,20 +131,83 @@ class GDocsClient:
             "url": f"https://docs.google.com/document/d/{result['documentId']}/edit"
         }
 
-    def get_document(self, document_id: str) -> dict:
-        """Get document metadata and content."""
-        return self._request("GET", f"/documents/{document_id}")
+    def get_document(self, document_id: str, include_tabs: bool = True) -> dict:
+        """Get document metadata and content.
 
-    def read_document(self, document_id: str) -> str:
-        """Read document content as plain text."""
-        doc = self.get_document(document_id)
-        return self._extract_text(doc)
+        Args:
+            document_id: The document ID
+            include_tabs: If True, include content from all tabs (default: True)
+
+        Returns:
+            Document dict with body and optionally tabs
+        """
+        params = {}
+        if include_tabs:
+            params["includeTabsContent"] = "true"
+        return self._request("GET", f"/documents/{document_id}", params=params if params else None)
+
+    def read_document(self, document_id: str, tab_id: Optional[str] = None) -> str:
+        """Read document content as plain text.
+
+        Args:
+            document_id: The document ID
+            tab_id: Optional tab ID (e.g., 't.fmhb4oc8cw7p'). If specified, only
+                   returns content from that tab. If None, returns all content.
+
+        Returns:
+            Plain text content
+        """
+        doc = self.get_document(document_id, include_tabs=True)
+
+        if tab_id:
+            # Extract only the specified tab
+            return self._extract_tab_text(doc, tab_id)
+        else:
+            # Extract all content (main body + all tabs)
+            return self._extract_text(doc)
+
+    def _extract_tab_text(self, doc: dict, tab_id: str) -> str:
+        """Extract text from a specific tab."""
+        tabs = doc.get("tabs", [])
+        for tab in tabs:
+            if tab.get("tabProperties", {}).get("tabId") == tab_id:
+                tab_content = tab.get("documentTab", {}).get("body", {})
+                text_parts = self._extract_content_elements(tab_content.get("content", []))
+                return "".join(text_parts)
+
+        raise ValueError(f"Tab '{tab_id}' not found in document")
 
     def _extract_text(self, doc: dict) -> str:
-        """Extract plain text from a Google Doc response."""
+        """Extract plain text from a Google Doc response.
+
+        Processes both the main body and all tabs if present.
+        """
         text_parts = []
+
+        # Process main body (always present)
         body = doc.get("body", {})
-        for element in body.get("content", []):
+        text_parts.extend(self._extract_content_elements(body.get("content", [])))
+
+        # Process tabs if present
+        tabs = doc.get("tabs", [])
+        for tab in tabs:
+            tab_properties = tab.get("tabProperties", {})
+            tab_title = tab_properties.get("title", "Untitled Tab")
+
+            # Add tab separator
+            if text_parts:
+                text_parts.append(f"\n\n=== TAB: {tab_title} ===\n\n")
+
+            # Extract content from this tab
+            tab_content = tab.get("documentTab", {}).get("body", {})
+            text_parts.extend(self._extract_content_elements(tab_content.get("content", [])))
+
+        return "".join(text_parts)
+
+    def _extract_content_elements(self, elements: list) -> list:
+        """Extract text from a list of content elements (paragraphs, tables, etc.)."""
+        text_parts = []
+        for element in elements:
             if "paragraph" in element:
                 para = element["paragraph"]
                 for elem in para.get("elements", []):
@@ -139,7 +223,7 @@ class GDocsClient:
                                         text_parts.append(elem["textRun"]["content"])
                         text_parts.append("\t")
                     text_parts.append("\n")
-        return "".join(text_parts)
+        return text_parts
 
     def batch_update(self, document_id: str, requests: list) -> dict:
         """Send batch update requests to a document."""
@@ -438,8 +522,8 @@ def main():
             if len(sys.argv) < 3:
                 print("Error: Missing URL argument", file=sys.stderr)
                 sys.exit(1)
-            doc_id = client.extract_document_id(sys.argv[2])
-            text = client.read_document(doc_id)
+            doc_id, tab_id = client.extract_document_id(sys.argv[2])
+            text = client.read_document(doc_id, tab_id=tab_id)
             print(text)
 
         elif command == "get":
