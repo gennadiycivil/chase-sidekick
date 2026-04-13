@@ -327,7 +327,8 @@ class SlackClient:
         self,
         channel_id: str,
         text: str,
-        thread_ts: Optional[str] = None
+        thread_ts: Optional[str] = None,
+        reply_broadcast: bool = False
     ) -> dict:
         """Send a message to a channel.
 
@@ -335,6 +336,7 @@ class SlackClient:
             channel_id: Channel ID to post to
             text: Message text
             thread_ts: Optional thread timestamp to reply in a thread
+            reply_broadcast: If True and thread_ts is set, also post to channel
 
         Returns:
             Dict with ts (timestamp) of the posted message
@@ -347,6 +349,8 @@ class SlackClient:
         payload = {"channel": channel_id, "text": text}
         if thread_ts:
             payload["thread_ts"] = thread_ts
+            if reply_broadcast:
+                payload["reply_broadcast"] = True
         return self._request("POST", "chat.postMessage", json_data=payload)
 
     def schedule_message(
