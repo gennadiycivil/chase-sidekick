@@ -142,6 +142,34 @@ Rules for clients
 - Do not include any larger snippets of HTML
 - Follow the same rules for what not to include in Documentation
 
+### Video Analysis Client
+
+The `video.py` client analyzes MP4 videos by extracting frames, audio, and subtitles using `ffmpeg`.
+
+**Usage:**
+```bash
+# Get video info
+python -m sidekick.clients.video info video.mp4
+
+# Extract frames
+python -m sidekick.clients.video extract-frames video.mp4 ./frames --interval 5.0 --max-frames 20
+
+# Extract audio
+python -m sidekick.clients.video extract-audio video.mp4 audio.wav
+
+# Full analysis
+python -m sidekick.clients.video analyze video.mp4 --interval 5.0 --max-frames 20
+```
+
+**Claude Integration:**
+When asked to analyze a video:
+1. Use `analyze_video()` to extract frames, audio, and subtitles
+2. Use Read tool on each extracted frame (Claude can read PNG images)
+3. Read subtitle file if present
+4. Combine frame analysis + subtitle text to answer questions
+
+See `.claude/skills/video.md` for full documentation.
+
 ### Adding new Documentation (Skills, Agents, and READMEs)
 - Do not include PII like the names or email addresses of real people, use Bob/Alice/etc and example.com 
 - Do not include real corporate URLs unless they are related to the client REST API being called 

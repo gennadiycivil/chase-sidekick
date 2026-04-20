@@ -609,6 +609,81 @@ class DropboxClient:
         # Use write_file_contents with mode='add' to create new file
         return self.write_file_contents(path, content, mode='add')
 
+    def get_paper_metadata(self, doc_id: str) -> dict:
+        """Get metadata for a Paper doc.
+
+        Note: Dropbox Paper API does NOT support retrieving full version/edit history.
+        You can only get current document metadata (last update time, title, etc).
+        To see full edit history, you must open the doc in a web browser.
+
+        Args:
+            doc_id: Paper doc ID (format: "id:..." from resolve_share_link or file metadata)
+
+        Returns:
+            dict with metadata including: doc_id, owner, title, revision,
+            created_date, last_updated_date, last_editor, status
+
+        Raises:
+            ValueError: If doc not found, not a Paper doc, or access denied
+        """
+        # Remove 'id:' prefix if present - Paper API doesn't use it
+        if doc_id.startswith("id:"):
+            doc_id = doc_id[3:]
+
+        data = {
+            "doc_id": doc_id
+        }
+
+        try:
+            result = self._request_api("/2/paper/docs/get_metadata", data)
+            return result
+        except ValueError as e:
+            if "not_found" in str(e).lower() or "access_denied" in str(e).lower():
+                raise ValueError(
+                    f"Cannot access Paper doc. This may be because:\n"
+                    f"1. The doc is in team space (shared doc you don't own)\n"
+                    f"2. Your app doesn't have Paper API permissions (files.metadata.read scope)\n"
+                    f"3. The doc ID is invalid\n"
+                    f"Original error: {e}"
+                )
+            raise
+
+    def list_revisions(self, path: str, limit: int = 10) -> list:
+        """List revision history for a regular file (not Paper doc).
+
+        For Paper docs, use list_paper_versions() instead.
+
+        Args:
+            path: Dropbox path or file ID (e.g., "/Documents/file.txt" or "id:...")
+            limit: Maximum number of revisions to return (default: 10, max: 100)
+
+        Returns:
+            List of revision dicts with keys: rev, modified, is_downloadable, size
+            Sorted newest first
+
+        Raises:
+            ValueError: If path not found, is a Paper doc (use list_paper_versions), or invalid
+        """
+        data = {
+            "path": path,
+            "mode": {".tag": "path"},
+            "limit": min(limit, 100)  # API max is 100
+        }
+
+        result = self._request_api("/2/files/list_revisions", data)
+
+        revisions = []
+        for entry in result.get("entries", []):
+            revisions.append({
+                "rev": entry.get("rev", ""),
+                "modified": entry.get("server_modified", entry.get("client_modified", "")),
+                "is_downloadable": entry.get("is_downloadable", True),
+                "size": entry.get("size", 0),
+                "name": entry.get("name", ""),
+            })
+
+        return revisions
+
     def update_paper_contents(self, path: str, content: Union[bytes, str], import_format: str = 'html') -> dict:
         """Update existing Paper doc using Paper API.
 
@@ -752,6 +827,8 @@ def main():
         print("  get-file-contents <path>", file=sys.stderr)
         print("  export-shared-link <url> [--path <path>] [--password <password>] [--override-download]", file=sys.stderr)
         print("  get-metadata <path>", file=sys.stderr)
+        print("  list-revisions <path> [--limit 10]", file=sys.stderr)
+        print("  list-paper-versions <doc_id>", file=sys.stderr)
         print("  get-paper-contents <path> [--format markdown|html]", file=sys.stderr)
         print("  get-paper-contents-from-link <share_link> [--format markdown|html]", file=sys.stderr)
         print("  create-paper-contents <path> [--content <text>] [--format markdown|html]", file=sys.stderr)
@@ -837,6 +914,89 @@ def main():
             path = sys.argv[2]
             metadata = client.get_metadata(path)
             print(_format_metadata(metadata))
+
+        elif command == "list-revisions":
+            if len(sys.argv) < 3:
+                print("Error: Missing path argument", file=sys.stderr)
+                sys.exit(1)
+
+            path = sys.argv[2]
+            limit = 10
+
+            # Check for --limit flag
+            i = 3
+            while i < len(sys.argv):
+                if sys.argv[i] == "--limit" and i + 1 < len(sys.argv):
+                    limit = int(sys.argv[i + 1])
+                    i += 2
+                else:
+                    i += 1
+
+            revisions = client.list_revisions(path, limit=limit)
+            print(f"Found {len(revisions)} revisions:")
+            for rev in revisions:
+                modified = rev["modified"]
+                # Format timestamp nicely
+                if 'T' in modified:
+                    date_time = modified.split('T')
+                    date = date_time[0]
+                    time_part = date_time[1].split('.')[0] if '.' in date_time[1] else date_time[1].split('Z')[0]
+                    modified_str = f"{date} {time_part}"
+                else:
+                    modified_str = modified
+
+                size_bytes = rev["size"]
+                if size_bytes < 1024:
+                    size_str = f"{size_bytes} B"
+                elif size_bytes < 1024 * 1024:
+                    size_str = f"{size_bytes / 1024:.1f} KB"
+                else:
+                    size_str = f"{size_bytes / (1024 * 1024):.1f} MB"
+
+                print(f"  {modified_str}  [{size_str}]  rev:{rev['rev']}")
+
+        elif command == "list-paper-versions":
+            if len(sys.argv) < 3:
+                print("Error: Missing doc_id argument", file=sys.stderr)
+                sys.exit(1)
+
+            doc_id = sys.argv[2]
+            metadata = client.get_paper_metadata(doc_id)
+
+            title = metadata.get("title", "Unknown")
+            print(f"Paper Doc: {title}")
+            print(f"  Doc ID: {metadata.get('doc_id', 'N/A')}")
+            print(f"  Revision: {metadata.get('revision', 'N/A')}")
+
+            created = metadata.get("created_date", "")
+            if created and 'T' in created:
+                date_time = created.split('T')
+                date = date_time[0]
+                time_part = date_time[1].split('.')[0] if '.' in date_time[1] else date_time[1].split('Z')[0]
+                created_str = f"{date} {time_part}"
+            else:
+                created_str = created or "N/A"
+            print(f"  Created: {created_str}")
+
+            modified = metadata.get("last_updated_date", "")
+            if modified and 'T' in modified:
+                date_time = modified.split('T')
+                date = date_time[0]
+                time_part = date_time[1].split('.')[0] if '.' in date_time[1] else date_time[1].split('Z')[0]
+                modified_str = f"{date} {time_part}"
+            else:
+                modified_str = modified or "N/A"
+            print(f"  Last Updated: {modified_str}")
+
+            owner = metadata.get("owner", "")
+            if owner:
+                print(f"  Owner: {owner}")
+
+            status = metadata.get("status", {}).get(".tag", "N/A")
+            print(f"  Status: {status}")
+
+            print("\nNote: Dropbox Paper API does not support retrieving full edit history.")
+            print("To see full version history, open the doc in a web browser.")
 
         elif command == "get-paper-contents":
             if len(sys.argv) < 3:

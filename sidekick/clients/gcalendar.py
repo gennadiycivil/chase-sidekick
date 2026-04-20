@@ -134,6 +134,17 @@ class GCalendarClient:
         except urllib.error.URLError as e:
             raise ConnectionError(f"Network error: {e.reason}")
 
+    def get_calendar(self, calendar_id: str = "primary") -> dict:
+        """Get calendar metadata including timezone.
+
+        Args:
+            calendar_id: Calendar ID (default: "primary" for main calendar)
+
+        Returns:
+            Calendar metadata dict with 'timeZone', 'summary', etc.
+        """
+        return self._request("GET", f"/calendars/{calendar_id}")
+
     def list_events(
         self,
         calendar_id: str = "primary",
@@ -296,6 +307,117 @@ class GCalendarClient:
         """
         self._request("DELETE", f"/calendars/{calendar_id}/events/{event_id}")
 
+    def query_freebusy(
+        self,
+        calendars: List[str],
+        time_min: str,
+        time_max: str
+    ) -> dict:
+        """Query free/busy information for calendars.
+
+        Args:
+            calendars: List of calendar IDs (email addresses)
+            time_min: Start time (RFC3339 timestamp)
+            time_max: End time (RFC3339 timestamp)
+
+        Returns:
+            Dict with 'calendars' key containing free/busy data for each calendar
+        """
+        request_body = {
+            "timeMin": time_min,
+            "timeMax": time_max,
+            "items": [{"id": cal_id} for cal_id in calendars]
+        }
+
+        return self._request("POST", "/freeBusy", json_data=request_body)
+
+
+def _find_available_slots(freebusy_data: dict, duration_minutes: int, time_min: str, time_max: str, work_start_hour: int = 9, work_end_hour: int = 17) -> List[dict]:
+    """Find available meeting slots from freebusy data.
+
+    Args:
+        freebusy_data: Response from query_freebusy
+        duration_minutes: Required meeting duration in minutes
+        time_min: Search start time (RFC3339)
+        time_max: Search end time (RFC3339)
+        work_start_hour: Start of working hours (default 9 AM)
+        work_end_hour: End of working hours (default 5 PM)
+
+    Returns:
+        List of specific meeting time slots with 'start' and 'end' keys
+    """
+    from datetime import datetime, timedelta, timezone
+
+    # Parse time range
+    start_dt = datetime.fromisoformat(time_min.replace("Z", "+00:00"))
+    end_dt = datetime.fromisoformat(time_max.replace("Z", "+00:00"))
+
+    # Collect all busy periods from all calendars
+    all_busy = []
+    for cal_id, cal_data in freebusy_data.get("calendars", {}).items():
+        for busy in cal_data.get("busy", []):
+            busy_start = datetime.fromisoformat(busy["start"].replace("Z", "+00:00"))
+            busy_end = datetime.fromisoformat(busy["end"].replace("Z", "+00:00"))
+            all_busy.append((busy_start, busy_end))
+
+    # Sort busy periods by start time
+    all_busy.sort()
+
+    # Find gaps and generate specific meeting slots
+    available = []
+    current_day = start_dt.date()
+    end_day = end_dt.date()
+
+    # Iterate through each day
+    while current_day <= end_day:
+        # Define working hours for this day
+        day_start = datetime.combine(current_day, datetime.min.time()).replace(hour=work_start_hour, tzinfo=timezone.utc)
+        day_end = datetime.combine(current_day, datetime.min.time()).replace(hour=work_end_hour, tzinfo=timezone.utc)
+
+        # Adjust first/last day boundaries
+        if current_day == start_dt.date():
+            day_start = max(day_start, start_dt)
+        if current_day == end_day:
+            day_end = min(day_end, end_dt)
+
+        # Find free time within this day
+        current = day_start
+        for busy_start, busy_end in all_busy:
+            # Skip busy periods outside this day
+            if busy_end < day_start or busy_start > day_end:
+                continue
+
+            # Check if there's a gap before this busy period
+            gap_start = current
+            gap_end = min(busy_start, day_end)
+
+            if gap_start < gap_end:
+                gap_minutes = (gap_end - gap_start).total_seconds() / 60
+                if gap_minutes >= duration_minutes:
+                    # Generate specific meeting slot at the start of the gap
+                    slot_end = gap_start + timedelta(minutes=duration_minutes)
+                    available.append({
+                        "start": gap_start.isoformat(),
+                        "end": slot_end.isoformat()
+                    })
+
+            # Move current to end of busy period (but stay within day)
+            current = max(current, min(busy_end, day_end))
+
+        # Check for gap at end of day
+        if current < day_end:
+            gap_minutes = (day_end - current).total_seconds() / 60
+            if gap_minutes >= duration_minutes:
+                slot_end = current + timedelta(minutes=duration_minutes)
+                available.append({
+                    "start": current.isoformat(),
+                    "end": slot_end.isoformat()
+                })
+
+        current_day = current_day + timedelta(days=1)
+
+    return available
+
 
 def _format_event_oneline(event: dict) -> str:
     """Format event as one-line summary."""
@@ -362,12 +484,14 @@ def main():
         print("  create <summary> <start> <end>            - Create new event")
         print("  update <event_id> <field> <value>         - Update event field")
         print("  delete <event_id>                         - Delete event")
+        print("  find-slots <email> <duration_min> [days]  - Find available meeting slots")
         print("\nExamples:")
         print('  python -m sidekick.clients.gcalendar list "2024-01-01T00:00:00Z" "2024-01-31T23:59:59Z"')
         print('  python -m sidekick.clients.gcalendar get abc123def456')
         print('  python -m sidekick.clients.gcalendar create "Team Meeting" "2024-01-15T14:00:00Z" "2024-01-15T15:00:00Z"')
         print('  python -m sidekick.clients.gcalendar update abc123def456 summary "Updated Title"')
         print('  python -m sidekick.clients.gcalendar delete abc123def456')
+        print('  python -m sidekick.clients.gcalendar find-slots adam@example.com 25 7')
         sys.exit(1)
 
     # Load configuration
@@ -461,6 +585,66 @@ def main():
             event_id = sys.argv[2]
             client.delete_event(event_id)
             print(f"Event deleted successfully: {event_id}")
+
+        elif command == "find-slots":
+            if len(sys.argv) < 4:
+                print("Error: Missing arguments. Need: email, duration_minutes", file=sys.stderr)
+                sys.exit(1)
+
+            from datetime import datetime, timedelta, timezone
+
+            other_email = sys.argv[2]
+            duration_minutes = int(sys.argv[3])
+            days_ahead = int(sys.argv[4]) if len(sys.argv) > 4 else 7
+
+            # Get current user's email (from config)
+            from sidekick.config import get_google_config
+            user_config = get_google_config()
+            user_email = user_config.get("user_email", "primary")
+
+            # Use system local timezone
+            now = datetime.now().astimezone()
+            local_tz = now.tzinfo
+
+            # Search from now until days_ahead
+            time_min = now.astimezone(timezone.utc).isoformat()
+            end_time = (now + timedelta(days=days_ahead)).astimezone(timezone.utc)
+            time_max = end_time.isoformat()
+
+            # Query freebusy for both calendars
+            freebusy_data = client.query_freebusy(
+                calendars=[user_email, other_email],
+                time_min=time_min,
+                time_max=time_max
+            )
+
+            # Find available slots (9 AM - 5 PM in local timezone)
+            # Convert local working hours to UTC hours
+            local_work_start = 9
+            local_work_end = 17
+            utc_offset = now.utcoffset().total_seconds() / 3600
+            utc_work_start = int(local_work_start - utc_offset) % 24
+            utc_work_end = int(local_work_end - utc_offset) % 24
+
+            available_slots = _find_available_slots(
+                freebusy_data,
+                duration_minutes,
+                time_min,
+                time_max,
+                work_start_hour=utc_work_start,
+                work_end_hour=utc_work_end
+            )
+
+            if not available_slots:
+                print(f"No available {duration_minutes}-minute slots found in the next {days_ahead} days.")
+            else:
+                tz_name = now.strftime('%Z')
+                print(f"Found {len(available_slots)} available {duration_minutes}-minute slots:\n")
+                for i, slot in enumerate(available_slots[:10], 1):  # Show first 10
+                    start_utc = datetime.fromisoformat(slot["start"].replace("Z", "+00:00"))
+                    start_local = start_utc.astimezone(local_tz)
+                    day_name = start_local.strftime('%A')
+                    print(f"{i}. {day_name}, {start_local.strftime('%b %d at %I:%M %p')} {tz_name} (for {duration_minutes} min)")
 
         else:
             print(f"Error: Unknown command '{command}'", file=sys.stderr)
