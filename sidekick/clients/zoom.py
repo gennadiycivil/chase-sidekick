@@ -799,7 +799,9 @@ def main():
                 print(f"No past instances for meeting {meeting_id}", file=sys.stderr)
                 sys.exit(1)
 
-            uuid = instances[-1]["uuid"]
+            # Sort instances by start_time to get the most recent
+            sorted_instances = sorted(instances, key=lambda x: x.get("start_time", ""))
+            uuid = sorted_instances[-1]["uuid"]
             result = client.get_meeting_summary(uuid)
             if result:
                 print(f"Meeting: {result.get('meeting_topic', '')}")
