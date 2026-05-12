@@ -307,6 +307,41 @@ class GCalendarClient:
         """
         self._request("DELETE", f"/calendars/{calendar_id}/events/{event_id}")
 
+    def search_events(
+        self,
+        query: str,
+        calendar_id: str = "primary",
+        time_min: Optional[str] = None,
+        time_max: Optional[str] = None,
+        max_results: int = 100
+    ) -> List[dict]:
+        """Search for events by text query (searches title, description, location, attendees).
+
+        Args:
+            query: Free text search query
+            calendar_id: Calendar ID (default: "primary" for main calendar)
+            time_min: Start time (RFC3339 timestamp, e.g., "2024-01-01T00:00:00Z")
+            time_max: End time (RFC3339 timestamp)
+            max_results: Maximum number of events to return
+
+        Returns:
+            List of event dicts matching the query
+        """
+        params = {
+            "q": query,
+            "maxResults": max_results,
+            "singleEvents": "true",  # Expand recurring events
+            "orderBy": "startTime"
+        }
+
+        if time_min:
+            params["timeMin"] = time_min
+        if time_max:
+            params["timeMax"] = time_max
+
+        result = self._request("GET", f"/calendars/{calendar_id}/events", params=params)
+        return result.get("items", []) if result else []
+
     def query_freebusy(
         self,
         calendars: List[str],
@@ -479,14 +514,16 @@ def main():
     if len(sys.argv) < 2:
         print("Usage: python -m sidekick.clients.gcalendar <command> [args]")
         print("\nCommands:")
-        print("  list [time_min] [time_max] [max_results] - List events in date range")
-        print("  get <event_id>                            - Get event details")
-        print("  create <summary> <start> <end>            - Create new event")
-        print("  update <event_id> <field> <value>         - Update event field")
-        print("  delete <event_id>                         - Delete event")
-        print("  find-slots <email> <duration_min> [days]  - Find available meeting slots")
+        print("  list [time_min] [time_max] [max_results]  - List events in date range")
+        print("  search-events <query> [time_min] [time_max] [max_results] - Search events by text")
+        print("  get <event_id>                             - Get event details")
+        print("  create <summary> <start> <end>             - Create new event")
+        print("  update <event_id> <field> <value>          - Update event field")
+        print("  delete <event_id>                          - Delete event")
+        print("  find-slots <email> <duration_min> [days]   - Find available meeting slots")
         print("\nExamples:")
         print('  python -m sidekick.clients.gcalendar list "2024-01-01T00:00:00Z" "2024-01-31T23:59:59Z"')
+        print('  python -m sidekick.clients.gcalendar search-events "Ned Lindau" "2026-04-01T00:00:00Z" "2026-05-12T23:59:59Z"')
         print('  python -m sidekick.clients.gcalendar get abc123def456')
         print('  python -m sidekick.clients.gcalendar create "Team Meeting" "2024-01-15T14:00:00Z" "2024-01-15T15:00:00Z"')
         print('  python -m sidekick.clients.gcalendar update abc123def456 summary "Updated Title"')
@@ -528,6 +565,31 @@ def main():
             print(f"Found {len(events)} events:\n")
             for event in events:
                 print(_format_event_oneline(event))
+                print()
+
+        elif command == "search-events":
+            if len(sys.argv) < 3:
+                print("Error: Missing query argument", file=sys.stderr)
+                sys.exit(1)
+
+            query = sys.argv[2]
+            time_min = sys.argv[3] if len(sys.argv) > 3 else None
+            time_max = sys.argv[4] if len(sys.argv) > 4 else None
+            max_results = int(sys.argv[5]) if len(sys.argv) > 5 else 100
+
+            events = client.search_events(
+                query=query,
+                time_min=time_min,
+                time_max=time_max,
+                max_results=max_results
+            )
+            print(f"Found {len(events)} events matching '{query}':\n")
+            for event in events:
+                print(_format_event_oneline(event))
+                # Show attendees for search results
+                if "attendees" in event:
+                    attendee_emails = [a.get("email", "") for a in event["attendees"]]
+                    print(f"  Attendees: {', '.join(attendee_emails)}")
                 print()
 
         elif command == "get":

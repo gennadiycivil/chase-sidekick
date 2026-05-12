@@ -89,6 +89,80 @@ class GDocsClient:
         except urllib.error.URLError as e:
             raise ConnectionError(f"Network error: {e.reason}")
 
+    def _drive_request(
+        self,
+        method: str,
+        endpoint: str,
+        params: Optional[dict] = None,
+        json_data: Optional[dict] = None,
+        retry_auth: bool = True
+    ) -> Optional[dict]:
+        """Make HTTP request to Google Drive API (for search functionality)."""
+        base_url = "https://www.googleapis.com/drive/v3"
+        url = f"{base_url}{endpoint}"
+        if params:
+            url += "?" + urllib.parse.urlencode(params)
+
+        headers = {
+            "Authorization": f"Bearer {self._get_access_token()}",
+            "Content-Type": "application/json",
+            "Accept": "application/json"
+        }
+        data = json.dumps(json_data).encode() if json_data else None
+        req = urllib.request.Request(url, data=data, headers=headers, method=method)
+
+        try:
+            with urllib.request.urlopen(req, timeout=self.timeout) as response:
+                self.api_call_count += 1
+                body = response.read().decode()
+                if not body or body.strip() == "":
+                    return {}
+                return json.loads(body)
+        except urllib.error.HTTPError as e:
+            error_body = e.read().decode() if e.fp else ""
+            if e.code == 401 and retry_auth:
+                self.access_token = None
+                return self._drive_request(method, endpoint, params, json_data, retry_auth=False)
+            if e.code == 404:
+                raise ValueError(f"Resource not found: {endpoint}")
+            elif e.code >= 400 and e.code < 500:
+                raise ValueError(f"Client error {e.code}: {error_body}")
+            elif e.code >= 500:
+                raise RuntimeError(f"Server error {e.code}: {error_body}")
+            else:
+                raise ConnectionError(f"HTTP error {e.code}: {error_body}")
+        except urllib.error.URLError as e:
+            raise ConnectionError(f"Network error: {e.reason}")
+
+    def search_documents(
+        self,
+        query: str,
+        max_results: int = 25
+    ) -> List[dict]:
+        """Search for Google Docs by text query (searches name and full text content).
+
+        Args:
+            query: Free text search query
+            max_results: Maximum number of documents to return (default 25)
+
+        Returns:
+            List of document dicts with id, name, modifiedTime, owners
+        """
+        # Build Drive API query: mimeType for Google Docs + full text search
+        drive_query = f"mimeType='application/vnd.google-apps.document' and fullText contains '{query}'"
+
+        params = {
+            "q": drive_query,
+            "pageSize": min(max_results, 100),  # API max is 100
+            "fields": "files(id,name,modifiedTime,owners,webViewLink)",
+            "orderBy": "modifiedTime desc"
+        }
+
+        result = self._drive_request("GET", "/files", params=params)
+        files = result.get("files", []) if result else []
+
+        return files
+
     @staticmethod
     def extract_document_id(url: str) -> tuple:
         """Extract document ID and optional tab ID from a Google Docs URL.
@@ -466,11 +540,15 @@ def main():
     if len(sys.argv) < 2:
         print("Usage: python -m sidekick.clients.gdocs <command> [args]")
         print("\nCommands:")
+        print("  search <query> [max_results]      - Search Google Docs by text")
         print("  create <title>                    - Create empty document")
         print("  create-from-md <title> <md_file>  - Create document from markdown file")
         print("  read <document_id>                - Read document as plain text")
         print("  read-url <url>                    - Read document by URL")
         print("  get <document_id>                 - Get document metadata")
+        print("\nExamples:")
+        print('  python -m sidekick.clients.gdocs search "Ned Lindau" 50')
+        print('  python -m sidekick.clients.gdocs read 1ABC123xyz')
         sys.exit(1)
 
     try:
@@ -489,7 +567,31 @@ def main():
     command = sys.argv[1]
 
     try:
-        if command == "create":
+        if command == "search":
+            if len(sys.argv) < 3:
+                print("Error: Missing query argument", file=sys.stderr)
+                sys.exit(1)
+            query = sys.argv[2]
+            max_results = int(sys.argv[3]) if len(sys.argv) > 3 else 25
+
+            docs = client.search_documents(query, max_results=max_results)
+            print(f"Found {len(docs)} documents matching '{query}':\n")
+            for doc in docs:
+                doc_id = doc.get("id", "")
+                name = doc.get("name", "Untitled")
+                modified = doc.get("modifiedTime", "")[:10]  # YYYY-MM-DD
+                owners = doc.get("owners", [])
+                owner_emails = [o.get("emailAddress", "") for o in owners]
+                owner_str = ", ".join(owner_emails) if owner_emails else "Unknown"
+                url = doc.get("webViewLink", f"https://docs.google.com/document/d/{doc_id}/edit")
+
+                print(f"{doc_id}: {name}")
+                print(f"  Modified: {modified}")
+                print(f"  Owners: {owner_str}")
+                print(f"  URL: {url}")
+                print()
+
+        elif command == "create":
             if len(sys.argv) < 3:
                 print("Error: Missing title argument", file=sys.stderr)
                 sys.exit(1)
