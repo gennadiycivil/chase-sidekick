@@ -1,0 +1,10 @@
+# Compiled binary
+miclog
+
+# Test output files
+*.txt
+*.wav
+test_*
+
+# Whisper models (large files)
+.whisper-models/

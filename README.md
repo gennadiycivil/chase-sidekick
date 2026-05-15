@@ -297,6 +297,7 @@ Current skills (each is a single-file client + markdown docs):
 - **Markdown to PDF** - Convert docs with pandoc
 - **Transcript** - Save conversation transcripts as markdown to memory/transcripts
 - **Welcome Doc** - Create personalized employee onboarding documents in Confluence
+- **Miclog** - Real-time microphone transcription using whisper.cpp (macOS only)
 
 
 ## Configuration
@@ -392,6 +393,7 @@ See individual skill documentation for detailed command usage:
 - [Markdown to PDF](.claude/skills/markdown-pdf/README.md) - Convert docs with pandoc
 - [Transcript](.claude/skills/transcript/README.md) - Save conversation transcripts to memory/transcripts
 - [Welcome Doc](.claude/skills/welcome-doc/README.md) - Create personalized employee onboarding documents
+- [Miclog](miclog/README.md) - Real-time microphone transcription using whisper.cpp (macOS only)
 
 ### Available Agents
 

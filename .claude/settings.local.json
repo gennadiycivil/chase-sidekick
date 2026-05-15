@@ -79,7 +79,9 @@
       "WebFetch(domain:docs.zoom.us)",
       "WebFetch(domain:os.dropbox.com)",
       "Skill(gsheets)",
-      "Skill(gsheets:*)"
+      "Skill(gsheets:*)",
+      "Skill(update-config)",
+      "Skill(update-config:*)"
     ],
     "additionalDirectories": [
       "/tmp"

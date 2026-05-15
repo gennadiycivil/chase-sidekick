@@ -1,6 +1,6 @@
-# CLAUDE.md
+# AGENTS.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+This file provides guidance to Codex (Codex.ai/code) when working with code in this repository.
 
 ## Project Overview
 
@@ -100,7 +100,7 @@ client.remove_label("PROJ-123", "needs-review")
 ## Architecture
 
 ```
-.claude/
+.Codex/
 ├── skills/            # Usage documentation (markdown)
 │   └── jira.md       # JIRA skill documentation
 └── agents/            # Multi-step workflows
@@ -120,7 +120,7 @@ sidekick/
 - **Inline Auth**: Auth logic in the client class, no separate auth module
 - **Confirmation for Writes**: Always ask for user confirmation before making calls that write data to remote clients (update, create, delete operations). Read operations do not require confirmation.
 - **Read Before Writing**: Before making ANY write/update to a remote service (JIRA, Confluence, Google Docs, Dropbox Paper, etc.), always read the latest state first. Assume documents are being edited by multiple people simultaneously. Never write based on stale content — fetch the current version immediately before updating.
-- **Skill Configuration Prompts**: If Claude tries to use a skill that is not configured yet, it will prompt you with the steps in the README.md for the skill to provision API keys, etc.
+- **Skill Configuration Prompts**: If Codex tries to use a skill that is not configured yet, it will prompt you with the steps in the README.md for the skill to provision API keys, etc.
 - **Verify Before Assuming**: ALWAYS query JIRA (or other clients) to verify current status before stating facts about issues, progress, or assignments. Do not assume status from meeting notes, retro boards, or other secondary sources — check the source of truth first. Cross-reference comments and recent activity on issues before drawing conclusions.
 - **Separate Process Feedback from Outcomes**: Retro items, meeting notes, and "what could have gone better" observations describe how work felt or how the process went — not whether a goal was achieved. To assess goal achievement, compare the stated goal against JIRA data (ticket status, what shipped). A goal can be achieved even if the process had problems. If JIRA data conflicts with meeting notes, retro boards, or other secondary sources, ask the user to clarify rather than picking one.
 - **Stick to Facts**: When writing reports, summaries, or status updates, use factual language only. Do not editorialize or use hyperbole (e.g., "above and beyond," "quietly," "eroding," "exposed systemic issues"). State what happened, not how impressive or concerning it was.
@@ -135,7 +135,7 @@ When adding a new service client (e.g., Slack, GitHub):
 1. Create single-file client in `sidekick/clients/{service}.py`
 2. Implement client class with service API methods
 3. Add `main()` function for CLI usage
-4. Create skill documentation in `.claude/skills/{service}.md`
+4. Create skill documentation in `.Codex/skills/{service}.md`
 5. Add config function to `config.py` if needed
 6. Update README.md with new service
 
@@ -162,28 +162,28 @@ python -m sidekick.clients.video extract-audio video.mp4 audio.wav
 python -m sidekick.clients.video analyze video.mp4 --interval 5.0 --max-frames 20
 ```
 
-**Claude Integration:**
+**Codex Integration:**
 When asked to analyze a video:
 1. Use `analyze_video()` to extract frames, audio, and subtitles
-2. Use Read tool on each extracted frame (Claude can read PNG images)
+2. Use Read tool on each extracted frame (Codex can read PNG images)
 3. Read subtitle file if present
 4. Combine frame analysis + subtitle text to answer questions
 
-See `.claude/skills/video.md` for full documentation.
+See `.Codex/skills/video.md` for full documentation.
 
 ### Adding new Documentation (Skills, Agents, and READMEs)
-- Do not include PII like the names or email addresses of real people, use Bob/Alice/etc and example.com 
-- Do not include real corporate URLs unless they are related to the client REST API being called 
+- Do not include PII like the names or email addresses of real people, use Bob/Alice/etc and example.com
+- Do not include real corporate URLs unless they are related to the client REST API being called
 - Do no include any IDs that might be real data, use placeholders
 - MAKE SURE EXAMPLES DO NOT INCLUDE REAL DATA OR NAMES
 
 #### New Skills
-- Invokable with /skill 
-- Include front matter 
+- Invokable with /skill
+- Include front matter
 - Don't ALSO create an agent automatically
 
 ### Providing local context
-The `CLAUDE.local.md` contains context on 1:1 docs, meeting docs, teams, people, and projects.
+The `Codex.local.md` contains context on 1:1 docs, meeting docs, teams, people, and projects.
 
 ### Source Search Priority
 When searching for Dropbox work artifacts, documents, strategy notes, meeting references, or "docs" broadly:

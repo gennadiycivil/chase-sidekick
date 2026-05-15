@@ -272,6 +272,59 @@ class DropboxClient:
         except urllib.error.URLError as e:
             raise ConnectionError(f"Network error connecting to Dropbox: {e.reason}")
 
+    def _request_upload(self, endpoint: str, api_arg: dict, upload_content: bytes,
+                        _retried: bool = False) -> dict:
+        """Upload bytes to content.dropboxapi.com and parse the JSON response.
+
+        Upload endpoints return metadata in the response body rather than the
+        Dropbox-API-Result header used by download endpoints.
+        """
+        url = f"https://content.dropboxapi.com{endpoint}"
+        headers = {
+            "Authorization": f"Bearer {self.access_token}",
+            "Dropbox-API-Arg": json.dumps(api_arg),
+            "Content-Type": "application/octet-stream",
+        }
+
+        req = urllib.request.Request(url, data=upload_content, headers=headers, method='POST')
+
+        try:
+            with urllib.request.urlopen(req, timeout=self.timeout) as response:
+                self.api_call_count += 1
+                response_body = response.read().decode('utf-8')
+                return json.loads(response_body) if response_body else {}
+
+        except urllib.error.HTTPError as e:
+            error_body = e.read().decode('utf-8') if e.fp else ''
+
+            if e.code == 401:
+                if not _retried and self._can_refresh():
+                    self._refresh_access_token()
+                    return self._request_upload(endpoint, api_arg, upload_content, _retried=True)
+                raise ValueError(
+                    f"Dropbox authentication failed (401 Unauthorized). "
+                    f"Check your access token."
+                )
+            elif e.code == 409:
+                try:
+                    error_data = json.loads(error_body) if error_body else {}
+                    error_summary = error_data.get('error_summary', 'Conflict')
+                    raise ValueError(f"Dropbox API conflict (409): {error_summary}")
+                except json.JSONDecodeError:
+                    raise ValueError(f"Dropbox API conflict (409): {error_body}")
+            elif 400 <= e.code < 500:
+                try:
+                    error_data = json.loads(error_body) if error_body else {}
+                    error_summary = error_data.get('error_summary', error_body)
+                    raise ValueError(f"Dropbox API error ({e.code}): {error_summary}")
+                except json.JSONDecodeError:
+                    raise ValueError(f"Dropbox API error ({e.code}): {error_body}")
+            else:
+                raise RuntimeError(f"Dropbox server error ({e.code}): {error_body}")
+
+        except urllib.error.URLError as e:
+            raise ConnectionError(f"Network error connecting to Dropbox: {e.reason}")
+
     def _is_paper_link(self, link: str) -> bool:
         """Check if link is for Paper doc based on URL.
 
@@ -497,6 +550,49 @@ class DropboxClient:
             api_arg = {"path": path}
             metadata, content = self._request_content("/2/files/download", api_arg)
             return content
+
+    def write_file_contents(
+        self,
+        path: str,
+        content: Union[bytes, str],
+        mode: str = "overwrite",
+        autorename: bool = False,
+        mute: bool = False,
+        strict_conflict: bool = False,
+    ) -> dict:
+        """Write bytes or text to a Dropbox path.
+
+        Args:
+            path: Dropbox destination path (e.g., "/Documents/notes.txt").
+            content: File content as bytes or UTF-8 text.
+            mode: Dropbox write mode: "add" or "overwrite".
+            autorename: If True, let Dropbox rename on conflict.
+            mute: If True, suppress Dropbox notifications.
+            strict_conflict: If True, enforce stricter conflict behavior.
+
+        Returns:
+            File metadata for the uploaded file.
+
+        Raises:
+            ValueError: If upload fails or the path already exists in add mode.
+        """
+        if mode not in ("add", "overwrite"):
+            raise ValueError("mode must be 'add' or 'overwrite'")
+
+        if isinstance(content, bytes):
+            content_bytes = content
+        else:
+            content_bytes = content.encode('utf-8')
+
+        api_arg = {
+            "path": path,
+            "mode": mode,
+            "autorename": autorename,
+            "mute": mute,
+            "strict_conflict": strict_conflict,
+        }
+
+        return self._request_upload("/2/files/upload", api_arg, content_bytes)
 
     def get_paper_contents(self, path: str, export_format: str = 'markdown') -> str:
         """Get Paper doc content.
@@ -825,6 +921,7 @@ def main():
         print("  search <query> [--path <path>] [--ext paper,pdf] [--cat paper,document]", file=sys.stderr)
         print("  ls [path] [--recursive]", file=sys.stderr)
         print("  get-file-contents <path>", file=sys.stderr)
+        print("  write-file-contents <path> [--content <text>] [--mode add|overwrite]", file=sys.stderr)
         print("  export-shared-link <url> [--path <path>] [--password <password>] [--override-download]", file=sys.stderr)
         print("  get-metadata <path>", file=sys.stderr)
         print("  list-revisions <path> [--limit 10]", file=sys.stderr)
@@ -905,6 +1002,34 @@ def main():
 
             # Write binary content to stdout
             sys.stdout.buffer.write(content)
+
+        elif command == "write-file-contents":
+            if len(sys.argv) < 3:
+                print("Error: Missing path argument", file=sys.stderr)
+                sys.exit(1)
+
+            path = sys.argv[2]
+            content_text = None
+            mode = "overwrite"
+
+            # Parse flags
+            i = 3
+            while i < len(sys.argv):
+                if sys.argv[i] == "--content" and i + 1 < len(sys.argv):
+                    content_text = sys.argv[i + 1]
+                    i += 2
+                elif sys.argv[i] == "--mode" and i + 1 < len(sys.argv):
+                    mode = sys.argv[i + 1]
+                    i += 2
+                else:
+                    i += 1
+
+            # Read from stdin if --content not provided
+            if content_text is None:
+                content_text = _read_stdin_content()
+
+            metadata = client.write_file_contents(path, content_text, mode=mode)
+            print(f"Written to {metadata.get('path_display', path)}", file=sys.stderr)
 
         elif command == "get-metadata":
             if len(sys.argv) < 3:

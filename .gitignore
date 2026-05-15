@@ -22,3 +22,6 @@ cache/
 
 # Generated output files
 output/
+
+# Whisper models (large files)
+.whisper-models/
