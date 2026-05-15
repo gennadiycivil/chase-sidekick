@@ -325,6 +325,38 @@ class JiraClient:
         }
         return self._request("GET", endpoint, params=params)
 
+    def create_issue(self, project: str, summary: str, issue_type: str = "Task",
+                     description: Optional[str] = None, **extra_fields) -> dict:
+        """Create a new issue.
+
+        Args:
+            project: Project key (e.g., "ASKSEC")
+            summary: Issue summary/title
+            issue_type: Issue type (default: "Task")
+            description: Issue description (optional)
+            **extra_fields: Additional fields as key=value pairs
+
+        Returns:
+            dict with created issue details (key, id, self)
+
+        Raises:
+            ValueError: If creation fails
+        """
+        endpoint = f"/rest/api/{self.api_version}/issue"
+        fields = {
+            "project": {"key": project},
+            "summary": summary,
+            "issuetype": {"name": issue_type},
+        }
+        if description:
+            fields["description"] = description
+
+        # Add any extra fields
+        fields.update(extra_fields)
+
+        json_data = {"fields": fields}
+        return self._request("POST", endpoint, json_data=json_data)
+
     def update_issue(self, issue_key: str, fields: dict) -> None:
         """Update issue fields.
 
@@ -778,6 +810,26 @@ def _print_issue_details(issue: dict) -> None:
         assignee_name = "Unassigned"
     print(f"  Assignee: {assignee_name}")
 
+    # Creator
+    creator = fields.get("creator", {})
+    if creator and isinstance(creator, dict):
+        creator_name = creator.get("displayName", creator.get("name", "Unknown"))
+        print(f"  Creator: {creator_name}")
+
+    # Created date
+    created = fields.get("created", "")
+    if created:
+        # Show just the date part (YYYY-MM-DD)
+        created_date = created[:10] if len(created) >= 10 else created
+        print(f"  Created: {created_date}")
+
+    # Updated date
+    updated = fields.get("updated", "")
+    if updated:
+        # Show just the date part (YYYY-MM-DD)
+        updated_date = updated[:10] if len(updated) >= 10 else updated
+        print(f"  Updated: {updated_date}")
+
     # Labels
     labels = fields.get("labels", [])
     if labels:
@@ -957,6 +1009,7 @@ def main():
         print("  query-by-parent <parent-key> [max-results]")
         print("  query-by-label <label> [project] [max-results]")
         print("  roadmap-hierarchy <root-issue> [project] [issue-type]")
+        print("  create-issue <project> <summary> [issue-type] [description]")
         print("  update-issue <issue-key> <fields-json>")
         print("  add-label <issue-key> <label>")
         print("  remove-label <issue-key> <label>")
@@ -1041,6 +1094,14 @@ def main():
                 count += 1
 
             print(f"\nTotal: {count} issues")
+
+        elif command == "create-issue":
+            project = sys.argv[2]
+            summary = sys.argv[3]
+            issue_type = sys.argv[4] if len(sys.argv) > 4 else "Task"
+            description = sys.argv[5] if len(sys.argv) > 5 else None
+            result = client.create_issue(project, summary, issue_type, description)
+            print(f"Created {result.get('key')} - {result.get('self')}")
 
         elif command == "update-issue":
             issue_key = sys.argv[2]
