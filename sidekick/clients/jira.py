@@ -375,6 +375,207 @@ class JiraClient:
         json_data = {"fields": fields}
         self._request("PUT", endpoint, json_data=json_data)
 
+    def list_transitions(self, issue_key: str) -> list:
+        """List available status transitions for an issue.
+
+        Args:
+            issue_key: Issue key like "PROJ-123"
+
+        Returns:
+            List of transition dicts. Each transition includes its id, name,
+            destination status, and expanded required fields when Jira returns
+            them.
+        """
+        endpoint = f"/rest/api/{self.api_version}/issue/{issue_key}/transitions"
+        result = self._request(
+            "GET",
+            endpoint,
+            params={"expand": "transitions.fields"},
+        )
+        return (result or {}).get("transitions", [])
+
+    def _get_issue_status_name(self, issue: dict) -> str:
+        status = issue.get("fields", {}).get("status", {})
+        if isinstance(status, dict):
+            return status.get("name", "Unknown")
+        return "Unknown"
+
+    def _format_transition_summary(self, transition: dict) -> str:
+        to_status = (transition.get("to") or {}).get("name", "Unknown")
+        return f"{transition.get('name', 'Unknown')} -> {to_status}"
+
+    def _matching_transitions(self, transitions: list, target: str) -> list:
+        normalized_target = target.casefold()
+        matches = []
+        seen_ids = set()
+
+        for transition in transitions:
+            values = [
+                transition.get("name", ""),
+                (transition.get("to") or {}).get("name", ""),
+            ]
+            if not any(value.casefold() == normalized_target for value in values if value):
+                continue
+
+            transition_id = transition.get("id")
+            if transition_id in seen_ids:
+                continue
+
+            seen_ids.add(transition_id)
+            matches.append(transition)
+
+        return matches
+
+    def _select_transition(self, transitions: list, target: str) -> dict:
+        matches = self._matching_transitions(transitions, target)
+        if len(matches) == 1:
+            return matches[0]
+
+        available = ", ".join(self._format_transition_summary(t) for t in transitions)
+        if not matches:
+            raise ValueError(
+                f"No transition matching '{target}'. Available transitions: {available}"
+            )
+
+        ambiguous = ", ".join(self._format_transition_summary(t) for t in matches)
+        raise ValueError(
+            f"Ambiguous transition target '{target}'. Matching transitions: {ambiguous}"
+        )
+
+    def _required_transition_fields(self, transition: dict) -> list:
+        fields = transition.get("fields") or {}
+        return [
+            field_name
+            for field_name, field_config in fields.items()
+            if field_config.get("required")
+        ]
+
+    def _apply_transition(
+        self,
+        issue_key: str,
+        before_issue: dict,
+        transition: dict,
+        dry_run: bool = False,
+    ) -> dict:
+        required_fields = self._required_transition_fields(transition)
+        if required_fields:
+            raise ValueError(
+                f"Transition '{transition.get('name')}' requires fields: "
+                f"{', '.join(required_fields)}"
+            )
+
+        transition_id = transition.get("id")
+        if not transition_id:
+            raise ValueError(f"Transition is missing id: {transition}")
+
+        before_status = self._get_issue_status_name(before_issue)
+        to_status = (transition.get("to") or {}).get("name", "Unknown")
+        result = {
+            "issue_key": issue_key,
+            "before_status": before_status,
+            "after_status": before_status,
+            "target_status": to_status,
+            "transition": transition,
+            "changed": False,
+            "dry_run": dry_run,
+        }
+
+        if dry_run:
+            return result
+
+        endpoint = f"/rest/api/{self.api_version}/issue/{issue_key}/transitions"
+        self._request(
+            "POST",
+            endpoint,
+            json_data={"transition": {"id": transition_id}},
+        )
+
+        after_issue = self.get_issue(issue_key)
+        after_status = self._get_issue_status_name(after_issue)
+        result["after_status"] = after_status
+        result["changed"] = before_status != after_status
+
+        if to_status != "Unknown" and after_status != to_status:
+            raise RuntimeError(
+                f"Transition '{transition.get('name')}' expected {issue_key} "
+                f"to end in '{to_status}', but Jira reports '{after_status}'"
+            )
+
+        return result
+
+    def transition_issue(
+        self,
+        issue_key: str,
+        target: str,
+        dry_run: bool = False,
+    ) -> dict:
+        """Move an issue using a transition name or destination status.
+
+        Args:
+            issue_key: Issue key like "PROJ-123"
+            target: Transition name or destination status, e.g. "In Review"
+            dry_run: If true, report the matching transition without applying it
+
+        Returns:
+            Dict with before/after status and transition metadata.
+        """
+        before_issue = self.get_issue(issue_key)
+        before_status = self._get_issue_status_name(before_issue)
+        if before_status.casefold() == target.casefold():
+            return {
+                "issue_key": issue_key,
+                "before_status": before_status,
+                "after_status": before_status,
+                "target_status": before_status,
+                "transition": None,
+                "changed": False,
+                "dry_run": dry_run,
+            }
+
+        transitions = self.list_transitions(issue_key)
+        transition = self._select_transition(transitions, target)
+        return self._apply_transition(issue_key, before_issue, transition, dry_run)
+
+    def complete_issue(self, issue_key: str, dry_run: bool = False) -> dict:
+        """Move an issue to the normal completed status for its workflow.
+
+        Jira workflows vary: some expose "Complete", while others expose
+        "Done". Prefer Complete when present, otherwise fall back to Done.
+        """
+        completion_targets = ["Complete", "Done"]
+        before_issue = self.get_issue(issue_key)
+        before_status = self._get_issue_status_name(before_issue)
+
+        if before_status.casefold() in {status.casefold() for status in completion_targets}:
+            return {
+                "issue_key": issue_key,
+                "before_status": before_status,
+                "after_status": before_status,
+                "target_status": before_status,
+                "transition": None,
+                "changed": False,
+                "dry_run": dry_run,
+            }
+
+        transitions = self.list_transitions(issue_key)
+        for target in completion_targets:
+            matches = self._matching_transitions(transitions, target)
+            if len(matches) > 1:
+                ambiguous = ", ".join(self._format_transition_summary(t) for t in matches)
+                raise ValueError(
+                    f"Ambiguous completion target '{target}'. "
+                    f"Matching transitions: {ambiguous}"
+                )
+            if matches:
+                return self._apply_transition(issue_key, before_issue, matches[0], dry_run)
+
+        available = ", ".join(self._format_transition_summary(t) for t in transitions)
+        raise ValueError(
+            f"No completion transition found for {issue_key}. "
+            f"Tried: {', '.join(completion_targets)}. "
+            f"Available transitions: {available}"
+        )
+
     def add_label(self, issue_key: str, label: str) -> None:
         """Add a label to an issue (preserving existing labels).
 
@@ -790,6 +991,81 @@ def _format_issue(issue: dict) -> str:
     return f"{key}: {summary} [{status_name}] ({assignee_name}){labels_str}"
 
 
+def _format_transition(transition: dict) -> str:
+    """Format a Jira transition for CLI output."""
+    transition_id = transition.get("id", "UNKNOWN")
+    transition_name = transition.get("name", "Unknown")
+    to_status = transition.get("to") or {}
+    to_name = to_status.get("name", "Unknown")
+    category = (to_status.get("statusCategory") or {}).get("name")
+    fields = transition.get("fields") or {}
+    required_fields = [
+        field_name
+        for field_name, field_config in fields.items()
+        if field_config.get("required")
+    ]
+
+    details = []
+    if category:
+        details.append(f"category: {category}")
+    if required_fields:
+        details.append(f"requires: {', '.join(required_fields)}")
+
+    details_str = f" [{'; '.join(details)}]" if details else ""
+    return f"  {transition_id}: {transition_name} -> {to_name}{details_str}"
+
+
+def _print_transitions(issue_key: str, transitions: list) -> None:
+    """Print Jira transitions in a human-readable list."""
+    print(f"Transitions for {issue_key} ({len(transitions)}):")
+    if not transitions:
+        print("  No transitions available.")
+        return
+
+    for transition in transitions:
+        print(_format_transition(transition))
+
+
+def _parse_transition_args(args: list) -> tuple:
+    """Parse transition command args, allowing unquoted multi-word targets."""
+    dry_run = False
+    target_parts = []
+
+    for arg in args:
+        if arg == "--dry-run":
+            dry_run = True
+        else:
+            target_parts.append(arg)
+
+    return dry_run, " ".join(target_parts).strip()
+
+
+def _print_transition_result(result: dict) -> None:
+    """Print the result returned by transition_issue or complete_issue."""
+    issue_key = result["issue_key"]
+    before_status = result["before_status"]
+    after_status = result["after_status"]
+    target_status = result["target_status"]
+    transition = result.get("transition")
+
+    if transition is None:
+        print(f"{issue_key} already in {after_status}; no transition applied.")
+        return
+
+    transition_name = transition.get("name", "Unknown")
+    if result["dry_run"]:
+        print(
+            f"Dry run: {issue_key} would transition "
+            f"{before_status} -> {target_status} via {transition_name}"
+        )
+        return
+
+    print(
+        f"Transitioned {issue_key}: "
+        f"{before_status} -> {after_status} via {transition_name}"
+    )
+
+
 def _print_issue_details(issue: dict) -> None:
     """Print detailed issue information."""
     key = issue.get("key", "UNKNOWN")
@@ -993,6 +1269,9 @@ def main():
         python3 sidekick/clients/jira.py query-by-parent PROJ-100
         python3 sidekick/clients/jira.py query-by-label backend
         python3 sidekick/clients/jira.py update-issue PROJ-123 '{"summary": "New"}'
+        python3 sidekick/clients/jira.py list-transitions PROJ-123
+        python3 sidekick/clients/jira.py transition PROJ-123 In Review --dry-run
+        python3 sidekick/clients/jira.py complete PROJ-123
         python3 sidekick/clients/jira.py add-label PROJ-123 needs-review
         python3 sidekick/clients/jira.py remove-label PROJ-123 needs-review
         python3 sidekick/clients/jira.py label-roadmap PROJ-1734 PROJ --dry-run
@@ -1011,6 +1290,9 @@ def main():
         print("  roadmap-hierarchy <root-issue> [project] [issue-type]")
         print("  create-issue <project> <summary> [issue-type] [description]")
         print("  update-issue <issue-key> <fields-json>")
+        print("  list-transitions <issue-key>")
+        print("  transition <issue-key> <target-status-or-transition-name> [--dry-run]")
+        print("  complete <issue-key> [--dry-run]")
         print("  add-label <issue-key> <label>")
         print("  remove-label <issue-key> <label>")
         print("  get-comments <issue-key> [max-results]")
@@ -1108,6 +1390,41 @@ def main():
             fields = json.loads(sys.argv[3])
             client.update_issue(issue_key, fields)
             print(f"Updated {issue_key}")
+
+        elif command == "list-transitions":
+            issue_key = sys.argv[2]
+            transitions = client.list_transitions(issue_key)
+            _print_transitions(issue_key, transitions)
+
+        elif command == "transition":
+            if len(sys.argv) < 4:
+                raise ValueError(
+                    "Usage: transition <issue-key> "
+                    "<target-status-or-transition-name> [--dry-run]"
+                )
+
+            issue_key = sys.argv[2]
+            dry_run, target = _parse_transition_args(sys.argv[3:])
+            if not target:
+                raise ValueError(
+                    "Usage: transition <issue-key> "
+                    "<target-status-or-transition-name> [--dry-run]"
+                )
+
+            result = client.transition_issue(issue_key, target, dry_run=dry_run)
+            _print_transition_result(result)
+
+        elif command == "complete":
+            if len(sys.argv) < 3:
+                raise ValueError("Usage: complete <issue-key> [--dry-run]")
+
+            issue_key = sys.argv[2]
+            dry_run, unexpected_target = _parse_transition_args(sys.argv[3:])
+            if unexpected_target:
+                raise ValueError("Usage: complete <issue-key> [--dry-run]")
+
+            result = client.complete_issue(issue_key, dry_run=dry_run)
+            _print_transition_result(result)
 
         elif command == "add-label":
             issue_key = sys.argv[2]
